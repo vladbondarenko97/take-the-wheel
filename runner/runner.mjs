@@ -34,9 +34,12 @@ const OC = { bind: 'Taking control of the tab', click: 'Clicking', dblclick: 'Cl
   extract: 'Reading the page', find: 'Reading the page', get: 'Reading the page', eval: 'Reading the page', frames: 'Reading the page' };
 function describe(cmd, st) {
   const steps = [];
+  let advanced = false; // ttw refuses any further `ttw do` after an advance in the same command
   for (const part of cmd.split(/\s*(?:&&|;|\|\|)\s*/)) {
     let m;
+    if (advanced && /^ttw do /.test(part)) { steps.push('⛔ Blocked: must read the next question first'); break; }
     if ((m = part.match(/^ttw do (.+)/))) {
+      advanced = /\b(a\d+|next)\b/.test(m[1]);
       steps.push(m[1].split(/\s+/).filter(x => x !== '--finish').map(id =>
         /^c\d+$/.test(id) ? `☑ Selecting "${st.labels[id] ?? id}"` : /^(a\d+|next)$/.test(id) ? `Next →` : /^f\d+$/.test(id) ? `Submitting` : id).join(' · '));
     } else if ((m = part.match(/^ttw fill (\S+) (.+)/))) steps.push(`⌨ Typing ${m[2]} into "${st.labels[m[1]] ?? m[1]}"`);
@@ -84,7 +87,10 @@ function* events(msg, st) {
   if (msg.type === 'user') for (const c of msg.message?.content ?? []) if (c.type === 'tool_result') {
     const t = Array.isArray(c.content) ? c.content.map(x => x.text ?? '').join('') : String(c.content ?? '');
     yield* learn(t, st);
-    yield { kind: 'out', text: clip(t), error: !!c.is_error };
+    // Errors are always visible in the panel, so send just the reason line, not a whole page digest.
+    const lines = t.split('\n').map(l => l.trim()).filter(l => l && !/^Exit code \d+$/.test(l));
+    const reason = lines.find(l => /^(refused|unknown id|WARNING|The browser stopped|no ADVANCE|usage:)|failed:/.test(l)) || lines[0];
+    yield { kind: 'out', text: c.is_error ? clip(reason, 200) : clip(t), error: !!c.is_error };
   }
   if (msg.type === 'result') {
     const limit = /hit your .*limit/i.test(msg.result ?? ''); // plan usage limit comes back as a "successful" result
