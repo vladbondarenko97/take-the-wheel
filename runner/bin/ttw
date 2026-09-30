@@ -20,7 +20,7 @@ const DIGEST = readFileSync(join(dirname(import.meta.dirname), 'digest.js'), 'ut
 const [cmd, ...args] = process.argv.slice(2);
 
 const oc = (...a) => {
-  try { return execFileSync('opencli', ['browser', 'task', ...a], { encoding: 'utf8', timeout: 25000, stdio: ['ignore', 'pipe', 'pipe'] }); }
+  try { return execFileSync('opencli', ['browser', 'task', ...a], { encoding: 'utf8', timeout: 25000, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' }); }
   catch (e) {
     if (e.code === 'ETIMEDOUT') die('The browser stopped responding (a native dialog or popup may be blocking the tab). Stop and ask the user to dismiss it (Waiting for you).');
     throw e;

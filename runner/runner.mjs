@@ -4,7 +4,7 @@ import { spawn, execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, delimiter } from 'node:path';
 
 const HERE = import.meta.dirname, PORT = 19826, SESSION = 'task';
 const TOKEN_FILE = join(HERE, '.token');
@@ -17,11 +17,12 @@ const SANDBOX = join(homedir(), '.take-the-wheel', 'sandbox');
 mkdirSync(SANDBOX, { recursive: true });
 const SHOTS = join(homedir(), '.take-the-wheel', 'shots'); // the only folder the agent may Read (screenshots from `ttw look`)
 mkdirSync(SHOTS, { recursive: true });
-const ENV = { ...process.env, PATH: `${join(HERE, 'bin')}:${process.env.PATH}` }; // puts `ttw` on the agent's PATH
+const ENV = { ...process.env, PATH: `${join(HERE, 'bin')}${delimiter}${process.env.PATH}` }; // puts `ttw` on the agent's PATH
 delete ENV.CLAUDECODE; // allow starting the runner from inside a Claude Code shell
 let child = null;
 
-const run = (cmd, args) => new Promise(r => execFile(cmd, args, { timeout: 20000 }, (e, out, err) => r(String(out || '') + String(err || ''))));
+const WIN = process.platform === 'win32'; // npm global installs are .cmd shims on Windows; spawn/execFile need shell:true to resolve them
+const run = (cmd, args) => new Promise(r => execFile(cmd, args, { timeout: 20000, shell: WIN }, (e, out, err) => r(String(out || '') + String(err || ''))));
 const unbind = () => run('opencli', ['browser', SESSION, 'unbind']);
 const denied = url => { try { const h = new URL(url).hostname; return DENY.some(d => h === d || h.endsWith('.' + d)); } catch { return false; } };
 const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
@@ -114,7 +115,7 @@ function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5
     '--permission-mode', 'dontAsk', '--max-turns', '60', '--max-budget-usd', String(Number(maxBudgetUsd) || 0.5),
     '--system-prompt-snapshot', 'off', // follow-ups use the current prompt, not the one recorded when the conversation began
     '--output-format', 'stream-json', '--verbose'],
-    { cwd: SANDBOX, env: { ...ENV, TTW_RUN_ID: randomBytes(6).toString('hex'), TTW_ALLOW_FINISH: allowFinish ? '1' : '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    { cwd: SANDBOX, env: { ...ENV, TTW_RUN_ID: randomBytes(6).toString('hex'), TTW_ALLOW_FINISH: allowFinish ? '1' : '0' }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
   const me = child;
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
   const send = ev => res.write(`data: ${JSON.stringify(ev)}\n\n`);
