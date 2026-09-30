@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Practice Quiz</title>
+<style>body{font:15px system-ui;max-width:640px;margin:30px auto}fieldset{margin:10px 0}#score{font-weight:700;font-size:20px}</style>
+<h1>Practice Quiz (local test page)</h1>
+<form id="f">
+  <p><label>Name <input name="name" required></label></p>
+  <p><label>Country <select name="country" required><option value="">Choose…</option><option>Canada</option><option>Japan</option><option>Romania</option></select></label></p>
+  <div id="qs"></div>
+  <p><label><input type="checkbox" name="agree" required> I confirm this is a practice attempt</label></p>
+  <button>Submit answers</button>
+</form>
+<p id="score"></p>
+<script>
+const Q = [
+  ['What is 7 × 8?', ['54', '56', '64'], 1],
+  ['Capital of Japan?', ['Kyoto', 'Osaka', 'Tokyo'], 2],
+  ['H2O is…', ['Water', 'Hydrogen peroxide', 'Salt'], 0],
+  ['Largest planet?', ['Saturn', 'Jupiter', 'Neptune'], 1],
+  ['Binary of 5?', ['101', '110', '111'], 0],
+  ['Who wrote "Hamlet"?', ['Dickens', 'Shakespeare', 'Austen'], 1],
+  ['Square root of 81?', ['8', '9', '7'], 1],
+  ['Fastest land animal?', ['Cheetah', 'Horse', 'Lion'], 0],
+  ['Days in a leap year?', ['365', '364', '366'], 2],
+  ['Boiling point of water at sea level (°C)?', ['90', '100', '110'], 1],
+];
+document.getElementById('qs').innerHTML = Q.map(([q, opts], i) =>
+  `<fieldset><legend>${i + 1}. ${q}</legend>` +
+  opts.map((o, j) => `<label><input type="radio" name="q${i}" value="${j}" required> ${o}</label> `).join('') +
+  `</fieldset>`).join('');
+document.getElementById('f').onsubmit = e => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const n = Q.filter(([, , a], i) => fd.get('q' + i) === String(a)).length;
+  document.getElementById('score').textContent = `Submitted by ${fd.get('name')} (${fd.get('country')}): score ${n}/10`;
+};
+</script>

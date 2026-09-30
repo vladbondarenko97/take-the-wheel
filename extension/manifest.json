@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Take the Wheel",
+  "version": "0.2.0",
+  "description": "Type a task in the side panel; Claude drives this tab through OpenCLI.",
+  "permissions": ["sidePanel", "tabs", "storage", "scripting"],
+  "host_permissions": ["http://127.0.0.1:19826/*", "<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "side_panel": { "default_path": "panel.html" },
+  "content_scripts": [{ "matches": ["<all_urls>"], "js": ["fx.js"], "run_at": "document_idle" }],
+  "action": { "default_title": "Take the Wheel" }
+}

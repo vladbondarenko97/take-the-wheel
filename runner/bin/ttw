@@ -1,0 +1,140 @@
+#!/usr/bin/env node
+// ttw: generic page helpers for the Take the Wheel agent (wraps `opencli browser task …`).
+//   ttw page                         digest of the current page with ids (c=choice, i=input, a=advance, f=finish, m=image)
+//   ttw do <id>… [--finish]          click/check ids in order; after an advance, wait for the page to change; print new digest
+//                                    `next` = whatever ADVANCE button exists at that moment (for pages that reveal Next after answering)
+//   ttw fill <id> <text>             set a text input (or pick a <select> option) and print the digest
+//   ttw look [--annotate]            screenshot the viewport to a file the agent can Read
+//   ttw note <text>                  save notes about the current site for future runs
+import { execFileSync } from 'node:child_process';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, dirname } from 'node:path';
+
+const HOME = join(homedir(), '.take-the-wheel');
+const SHOTS = join(HOME, 'shots'), SITES = join(HOME, 'sites'), STATE = join(HOME, 'state');
+for (const d of [SHOTS, SITES, STATE]) mkdirSync(d, { recursive: true });
+const RUN = (process.env.TTW_RUN_ID || 'default').replace(/[^\w-]/g, '');
+const STATE_FILE = join(STATE, RUN + '.json');
+const DIGEST = readFileSync(join(dirname(import.meta.dirname), 'digest.js'), 'utf8');
+const [cmd, ...args] = process.argv.slice(2);
+
+const oc = (...a) => {
+  try { return execFileSync('opencli', ['browser', 'task', ...a], { encoding: 'utf8', timeout: 25000, stdio: ['ignore', 'pipe', 'pipe'] }); }
+  catch (e) {
+    if (e.code === 'ETIMEDOUT') die('The browser stopped responding (a native dialog or popup may be blocking the tab). Stop and ask the user to dismiss it (Waiting for you).');
+    throw e;
+  }
+};
+// Before acting, capture the page's alert/confirm/prompt so they can't freeze the tab. Confirms/prompts are cancelled, never accepted.
+const GUARD = `(()=>{if(!window.__ttwGuard){window.__ttwGuard=1;window.__ttwDialogs=[];const log=(k,m)=>window.__ttwDialogs.push(k+': '+String(m).slice(0,200));window.alert=m=>log('alert',m);window.confirm=m=>(log('confirm (cancelled)',m),false);window.prompt=m=>(log('prompt (cancelled)',m),null);}document.dispatchEvent(new CustomEvent('ttw-act'));return 1})()`; // ttw-act lifts the fx.js shield
+const guard = () => { try { oc('eval', GUARD); } catch {} };
+const state = () => existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, 'utf8')) : { map: {}, notesShown: [] };
+const saveState = s => writeFileSync(STATE_FILE, JSON.stringify(s));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const s0 = () => state();
+const die = msg => { console.log(msg); process.exit(1); };
+
+const dialogs = []; // alerts/confirms captured by GUARD during this command
+function digest() {
+  const d = JSON.parse(oc('eval', DIGEST));
+  dialogs.push(...(d.dialogs || []));
+  if (dialogs.length) d.text = d.text.replace(/\n/, `\nPAGE DIALOGS (captured, not shown): ${dialogs.join(' / ')}\n`);
+  const s = state();
+  s.map = d.map; s.fp = d.fp; s.host = d.host; s.cur = d.cur; s.total = d.total;
+  let notes = '';
+  const file = join(SITES, d.host + '.md');
+  if (d.host && existsSync(file) && !s.notesShown.includes(d.host)) {
+    notes = `NOTES FROM EARLIER RUNS ON ${d.host}:\n${readFileSync(file, 'utf8').trim()}\n---\n`;
+    s.notesShown.push(d.host);
+  }
+  // One-time nudge: after a few digests on a site with no notes, remind the agent to save some before finishing.
+  s.calls = (s.calls || 0) + 1;
+  if (d.host && !existsSync(file) && s.calls >= 2 && !(s.nudged || []).includes(d.host)) {
+    (s.nudged ??= []).push(d.host);
+    d.text += `\nREMINDER: no site notes for ${d.host} yet. Before your final message, save them: chain \`&& ttw note "…"\` onto your last command.`;
+  }
+  saveState(s);
+  return { ...d, text: notes + d.text };
+}
+
+async function waitForChange(oldFp) {
+  for (let t = 0; t < 12; t++) {
+    await sleep(700);
+    try { const d = digest(); if (d.fp !== oldFp) return d; } catch {} // page may be mid-navigation
+  }
+  const d = digest();
+  return { ...d, text: 'WARNING: the page did not change after advancing.\n' + d.text };
+}
+
+const run = async () => {
+  if (cmd === 'page') return console.log(digest().text);
+
+  if (cmd === 'do') {
+    // --finish (submit / advance past the last question) only works when the user's own task asked to submit.
+    if (args.includes('--finish') && process.env.TTW_ALLOW_FINISH !== '1') die('refused: --finish needs the user to have asked to submit/finish in their task. Stop and ask (Waiting for you).');
+    const finishOk = args.includes('--finish');
+    // One advance per Bash call: the agent must read each new question before answering it.
+    // Commands chained with && share one shell, so the same parent pid means "you haven't seen the new page yet".
+    if (s0().advancePpid === process.ppid) die('refused: you already advanced in this command and have not read the new question yet. Read the digest above, then answer it in a separate call.');
+    const ids = args.filter(a => a !== '--finish');
+    const s = state();
+    if (!ids.length) die('usage: ttw do <id>… [--finish]');
+    const lastQ = st => st.total && st.cur && st.cur >= st.total;
+    for (const id of ids) {
+      if (id === 'next') { if (lastQ(s) && !finishOk) die(`refused: this looks like the last question (${s.cur} of ${s.total}); advancing may submit. Stop here unless the user asked to submit.`); continue; }
+      const it = s.map[id];
+      if (!it) die(`unknown id ${id}: run \`ttw page\` first (ids change when the page changes)`);
+      if (it.kind === 'finish' && !finishOk) die(`refused: ${id} is a FINISH/submit button. Only use --finish if the user explicitly asked to submit.`);
+      if (it.kind === 'advance' && s.total && s.cur && s.cur >= s.total && !finishOk)
+        die(`refused: this looks like the last question (${s.cur} of ${s.total}); advancing may submit. Stop here unless the user asked to submit.`);
+    }
+    let advanced = false;
+    for (const id of ids) {
+      let it = s.map[id];
+      if (id === 'next') { // resolve now: answering may have just revealed the button
+        const d = digest();
+        const a = Object.values(d.map).find(x => x.kind === 'advance');
+        if (!a) die('no ADVANCE button is visible yet.\n' + d.text);
+        if (d.total && d.cur && d.cur >= d.total && !finishOk) die(`refused: this is the last question (${d.cur} of ${d.total}); stopping without advancing.\n` + d.text);
+        it = a; s.fp = d.fp;
+      }
+      guard();
+      try { oc(it.kind === 'native' ? 'check' : 'click', it.sel); }
+      catch (e) { die(`${id} failed: ${String(e.stdout || e.message).slice(0, 400)}\nRun \`ttw page\` and retry.`); }
+      if (it.kind === 'advance' || it.kind === 'finish') advanced = true;
+    }
+    const out = advanced ? await waitForChange(s.fp) : digest();
+    if (advanced) { const s2 = state(); s2.advancePpid = process.ppid; saveState(s2); }
+    return console.log(out.text);
+  }
+
+  if (cmd === 'fill') {
+    const [id, ...rest] = args, it = state().map[id];
+    if (!it || !['text', 'select'].includes(it.kind)) die(`${id} is not an input id from the last \`ttw page\``);
+    guard();
+    try { oc(it.kind === 'select' ? 'select' : 'fill', it.sel, rest.join(' ')); }
+    catch (e) { die(`fill failed: ${String(e.stdout || e.message).slice(0, 400)}`); }
+    return console.log(digest().text);
+  }
+
+  if (cmd === 'look') {
+    const file = join(SHOTS, `${RUN}-${Date.now()}.png`);
+    oc('screenshot', ...(args.includes('--annotate') ? ['--annotate'] : []), file);
+    const old = readdirSync(SHOTS).map(f => join(SHOTS, f)).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+    for (const f of old.slice(40)) unlinkSync(f);
+    return console.log(`Screenshot saved: ${file}\nView it with the Read tool.${args.includes('--annotate') ? ' Numbers on it are opencli refs: `opencli browser task click <N>`.' : ''}`);
+  }
+
+  if (cmd === 'note') {
+    const host = state().host;
+    const text = args.join(' ').trim();
+    if (!host) die('run `ttw page` first so I know which site this is');
+    if (!text || text.length > 1500) die('usage: ttw note "<up to 1500 chars>"');
+    writeFileSync(join(SITES, host + '.md'), text + '\n');
+    return console.log(`Saved notes for ${host}.`);
+  }
+
+  die('usage: ttw page | do <id>… [--finish] | fill <id> <text> | look [--annotate] | note <text>');
+};
+run().catch(e => die(String(e.stdout || e.message).slice(0, 600)));
