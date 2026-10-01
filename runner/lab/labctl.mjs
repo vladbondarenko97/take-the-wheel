@@ -152,8 +152,16 @@ async function locate(description) {
 async function look(question) {
   const image = screenshotBase64();
   // Thinking on here (unlike locate): this is a reasoning/reading task, not a quick lookup,
-  // and a terse one-word answer is actively unhelpful for verification.
-  const answer = await askVision(`You're looking at a screenshot of a virtual machine console inside a browser tab. ${question}`, image, { think: true });
+  // and a terse one-word answer is actively unhelpful for verification. But the model's
+  // *final* text still needs to be short: this whole answer becomes part of the orchestrating
+  // model's conversation, which gets re-sent on every subsequent turn for the rest of the
+  // session -- a verbose "let me reason through this step by step... Final Answer:" answer
+  // (measured: ~450 characters for one question) gets paid for again and again as the
+  // conversation grows, not just once. Thinking is still useful internally; only the surfaced
+  // response needs to be tight.
+  const prompt = `You're looking at a screenshot of a virtual machine console inside a browser tab. ${question}\n\n` +
+    `Answer in at most one short sentence, stating only the answer. No preamble, no restating the question, no numbered steps, no headers, no "Final Answer" label.`;
+  const answer = await askVision(prompt, image, { think: true });
   console.log(answer.trim());
 }
 

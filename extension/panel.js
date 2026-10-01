@@ -79,6 +79,7 @@ const show = {
   think: (e, c) => log(c, '💭 ' + e.text, 'think'),
   tool: (e, c) => log(c, '▶ ' + e.text.replaceAll('opencli browser task ', ''), 'tool'),
   out: (e, c) => log(c, '  ↳ ' + e.text, e.error ? 'err' : 'out'),
+  vision: (e, c) => log(c, '👁 ' + e.text, 'vision'),
   error: (e, c) => log(c, '✗ ' + e.text, 'err'),
   done: (e, c) => {
     // The final assistant message becomes the result card (it already arrived as a text line).

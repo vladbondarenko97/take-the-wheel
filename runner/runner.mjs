@@ -91,6 +91,7 @@ function* events(msg, st) {
     if (c.type === 'text' && c.text.trim()) yield { kind: 'text', text: c.text };
     if (c.type === 'tool_use') {
       const cmd = c.input?.command ?? '';
+      st.lastCmd = cmd; // so the matching tool_result below can tell a look/locate answer apart from generic command output
       yield { kind: 'tool', text: c.name === 'WebSearch' ? `WebSearch ${c.input?.query}` : c.name === 'Read' ? 'Read screenshot' : cmd || JSON.stringify(c.input) };
       const steps = c.name === 'WebSearch' ? [`🔎 Searching: ${c.input?.query}`] : c.name === 'Read' ? ['👁 Looking at the page (frontier vision)'] : describe(cmd, st);
       for (const t of steps) yield { kind: 'step', text: t };
@@ -99,6 +100,10 @@ function* events(msg, st) {
   if (msg.type === 'user') for (const c of msg.message?.content ?? []) if (c.type === 'tool_result') {
     const t = Array.isArray(c.content) ? c.content.map(x => x.text ?? '').join('') : String(c.content ?? '');
     yield* learn(t, st);
+    // The local vision model's actual answer is the interesting part of a look/locate call --
+    // surface it unconditionally (not gated behind "Show command details" like generic tool
+    // output) so it's visible without digging.
+    if (!c.is_error && /^labctl \S+ (look|locate)\b/.test(st.lastCmd || '')) { yield { kind: 'vision', text: clip(t, 400) }; continue; }
     // Errors are always visible in the panel, so send just the reason line, not a whole page digest.
     const lines = t.split('\n').map(l => l.trim()).filter(l => l && !/^Exit code \d+$/.test(l));
     const reason = lines.find(l => /^(refused|unknown id|WARNING|The browser stopped|no ADVANCE|usage:)|failed:/.test(l)) || lines[0];
