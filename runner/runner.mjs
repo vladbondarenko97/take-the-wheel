@@ -11,6 +11,8 @@ const TOKEN_FILE = join(HERE, '.token');
 if (!existsSync(TOKEN_FILE)) writeFileSync(TOKEN_FILE, randomBytes(16).toString('hex'), { mode: 0o600 });
 const TOKEN = readFileSync(TOKEN_FILE, 'utf8').trim();
 const PROMPT = readFileSync(join(HERE, 'agent-prompt.md'), 'utf8');
+const PROMPT_LAB = readFileSync(join(HERE, 'lab-agent-prompt.md'), 'utf8');
+const LAB_SESSIONS = ['instructions', 'vm'];
 const DENY = JSON.parse(readFileSync(join(HERE, 'denylist.json'), 'utf8'));
 // Empty cwd: no stray CLAUDE.md / .mcp.json / hooks. Fixed path, because claude --resume looks sessions up by cwd.
 const SANDBOX = join(homedir(), '.take-the-wheel', 'sandbox');
@@ -46,6 +48,13 @@ function describe(cmd, st) {
     } else if ((m = part.match(/^ttw fill (\S+) (.+)/))) steps.push(`⌨ Typing ${m[2]} into "${st.labels[m[1]] ?? m[1]}"`);
     else if (/^ttw page/.test(part)) steps.push('Reading the page');
     else if (/^ttw note/.test(part)) steps.push('📝 Saving notes about this site');
+    else if ((m = part.match(/^labctl \S+ type (.+)/))) steps.push(`⌨ Typing ${m[1]}`);
+    else if ((m = part.match(/^labctl \S+ key (.+)/))) steps.push(`Pressing ${m[1]}`);
+    else if ((m = part.match(/^labctl \S+ locate (.+)/))) steps.push(`👁 Finding: ${m[1]}`);
+    else if (/^labctl \S+ click/.test(part)) steps.push('Clicking the VM screen');
+    else if (/^labctl \S+ username/.test(part)) steps.push('Typing the lab username');
+    else if (/^labctl \S+ password/.test(part)) steps.push('Typing the lab password');
+    else if (/^labctl \S+ shot/.test(part)) steps.push('👁 Looking at the VM screen');
     else if ((m = part.match(/^opencli browser \S+ open\s+["']?([^"'\s]+)/))) { try { steps.push(`Opening ${new URL(m[1]).hostname}`); } catch { steps.push('Opening a page'); } }
     else if ((m = part.match(/^opencli browser \S+ keys\s+(\S+)/))) steps.push(`Pressing ${m[1]}`);
     else if ((m = part.match(/^opencli browser \S+ (\w+)/)) && OC[m[1]]) steps.push(OC[m[1]]);
@@ -99,19 +108,25 @@ function* events(msg, st) {
   }
 }
 
-function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5, sessionId, effort = 'low', search = false }) {
+function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5, sessionId, effort = 'low', search = false, lab = false }) {
   if (!['low', 'medium', 'high'].includes(effort)) effort = 'low';
   // Submitting is only unlocked by the user's own words.
   const allowFinish = /\b(submit|finish|turn (it )?in|hand (it )?in)\b/i.test(task) && !/\b(don'?t|do not|never|without|not)\b[^.]{0,25}\b(submit|finish)/i.test(task);
   if (search) task = `SEARCH MODE is on. ${task}`;
-  const tab = `Current tab: ${tabUrl || 'unknown'}. First run: opencli browser ${SESSION} bind`;
+  // Lab mode: the panel already bound `instructions` and `vm` to their tabs (focus-switch +
+  // bind has to happen from the extension, which is the only side with chrome.tabs/windows
+  // access) before this request was sent, so the agent must not bind/unbind either itself.
+  const tab = lab
+    ? `Sessions "instructions" and "vm" are already bound to their tabs.`
+    : `Current tab: ${tabUrl || 'unknown'}. First run: opencli browser ${SESSION} bind`;
   const wrapped = sessionId
-    ? `Follow-up in the same conversation. ${tab} again (the tab was released between messages) and re-read the page before acting. User: ${task}`
-    : `Session name: ${SESSION}. ${tab}. Task: ${task}`;
+    ? `Follow-up in the same conversation. ${lab ? tab : `${tab} again (the tab was released between messages)`} and re-read the page before acting. User: ${task}`
+    : `${lab ? '' : `Session name: ${SESSION}. `}${tab}. Task: ${task}`;
   child = spawn('claude', ['-p', wrapped, ...(sessionId ? ['--resume', sessionId] : []),
     '--model', ['sonnet', 'opus'].includes(model) ? model : 'haiku', '--effort', effort,
-    '--system-prompt', PROMPT, '--tools', search ? 'Bash,Read,WebSearch' : 'Bash,Read', '--allowedTools', 'Bash(opencli *)', 'Bash(ttw *)', `Read(/${SHOTS}/**)`, ...(search ? ['WebSearch'] : []),
-    '--disallowedTools', 'Bash(opencli browser task screenshot *)', // screenshots only via `ttw look`, into SHOTS
+    '--system-prompt', lab ? PROMPT_LAB : PROMPT, '--tools', search ? 'Bash,Read,WebSearch' : 'Bash,Read',
+    '--allowedTools', 'Bash(opencli *)', 'Bash(ttw *)', ...(lab ? ['Bash(labctl *)'] : []), `Read(/${SHOTS}/**)`, ...(search ? ['WebSearch'] : []),
+    '--disallowedTools', 'Bash(opencli browser task screenshot *)', // screenshots only via `ttw look`, into SHOTS (lab mode uses labctl's own screenshot path instead)
     '--permission-mode', 'dontAsk', '--max-turns', '60', '--max-budget-usd', String(Number(maxBudgetUsd) || 0.5),
     '--system-prompt-snapshot', 'off', // follow-ups use the current prompt, not the one recorded when the conversation began
     '--output-format', 'stream-json', '--verbose'],
@@ -119,7 +134,7 @@ function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5
   const me = child;
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
   const send = ev => res.write(`data: ${JSON.stringify(ev)}\n\n`);
-  send({ kind: 'start', text: `${model} · ${effort} effort · search ${search ? 'on' : 'off'} · $${maxBudgetUsd} cap` });
+  send({ kind: 'start', text: `${model} · ${effort} effort · search ${search ? 'on' : 'off'}${lab ? ' · lab mode' : ''} · $${maxBudgetUsd} cap` });
   let buf = '', errBuf = '';
   const st = { labels: {}, q: '' };
   me.stdout.on('data', d => {
@@ -152,9 +167,18 @@ http.createServer(async (req, res) => {
     if (child) return json(res, 409, { error: 'a task is already running' });
     return startTask(res, body);
   }
+  if (req.method === 'POST' && path === '/lab/bind') {
+    const body = await readBody(req);
+    if (!LAB_SESSIONS.includes(body.session)) return json(res, 400, { error: `session must be one of: ${LAB_SESSIONS.join(', ')}` });
+    // Binds whatever tab is currently active -- the panel must have focused the right
+    // window/tab (chrome.windows.update + chrome.tabs.update) immediately before this call.
+    const out = await run('opencli', ['browser', body.session, 'bind']);
+    try { return json(res, 200, JSON.parse(out)); } catch { return json(res, 502, { error: out.trim() }); }
+  }
   if (req.method === 'POST' && path === '/stop') {
     if (child) child.kill('SIGINT');
     await unbind();
+    for (const s of LAB_SESSIONS) await run('opencli', ['browser', s, 'unbind']);
     return json(res, 200, { stopped: true });
   }
   json(res, 404, { error: 'not found' });

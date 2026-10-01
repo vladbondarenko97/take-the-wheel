@@ -9,15 +9,15 @@ const save = () => chrome.storage.local.set({ convos, current });
 const cur = () => convos[current];
 
 // Model / effort / search / budget are saved per conversation; a new one starts with the current values.
-const readSettings = () => ({ model: $('model').value, effort: $('effort').value, search: $('search').checked, budget: $('budget').value });
+const readSettings = () => ({ model: $('model').value, effort: $('effort').value, search: $('search').checked, lab: $('lab').checked, budget: $('budget').value });
 function applySettings(st) {
   if (!st) return;
-  $('model').value = st.model; $('effort').value = st.effort; $('search').checked = !!st.search; $('budget').value = st.budget;
+  $('model').value = st.model; $('effort').value = st.effort; $('search').checked = !!st.search; $('lab').checked = !!st.lab; $('budget').value = st.budget;
 }
 function saveSettings() {
   if (!cur()) return;
   cur().settings = readSettings();
-  chrome.storage.local.set({ model: $('model').value, budget: $('budget').value, search: $('search').checked }); // defaults for new conversations
+  chrome.storage.local.set({ model: $('model').value, budget: $('budget').value, search: $('search').checked, lab: $('lab').checked }); // defaults for new conversations
   save();
 }
 
@@ -95,12 +95,45 @@ const show = {
   end: () => {},
 };
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Lab mode drives two tabs at once: the lab platform's own tab (Instructions/Resources —
+// real readable DOM) and the VM console's "Open in New Window" popout (a canvas with no DOM,
+// driven by labctl). opencli's `bind` always attaches to "whatever tab is currently active",
+// and only the extension can change OS-level tab/window focus -- so this focuses each tab in
+// turn and binds it to its session name right then, before the agent ever starts.
+async function prepareLab() {
+  const tabs = await chrome.tabs.query({});
+  const instructions = tabs.find(t => t.url?.includes('/LabClient/'));
+  const vm = tabs.find(t => t.url?.includes('/VirtualizationClient/') && t.url.includes('vmOnly=1'));
+  if (!instructions || !vm) {
+    const missing = [!instructions && 'the lab tab', !vm && "the VM's \"Open in New Window\" popout"].filter(Boolean).join(' and ');
+    throw new Error(`Lab mode: couldn't find ${missing}. Open the lab, then its Resources tab -> Open in New Window, then try again.`);
+  }
+  for (const [session, tab] of [['instructions', instructions], ['vm', vm]]) {
+    await chrome.windows.update(tab.windowId, { focused: true });
+    await chrome.tabs.update(tab.id, { active: true });
+    await sleep(250); // let Chrome actually finish switching before opencli binds "the active tab"
+    const r = await fetch(`${RUNNER}/lab/bind`, { method: 'POST', headers: { ...auth(), 'content-type': 'application/json' }, body: JSON.stringify({ session }) });
+    if (!r.ok) throw new Error(`Lab mode: failed to bind ${session}: ${(await r.json()).error ?? r.status}`);
+  }
+  return { instructionsUrl: instructions.url, vmTabId: vm.id };
+}
+
 async function go() {
   const task = $('task').value.trim();
   if (!task || running) return;
   const c = cur();
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab) await chrome.tabs.update(tab.id, { active: true }); // opencli binds the active tab
+  const lab = $('lab').checked;
+  let tab, labInfo;
+  if (lab) {
+    try { labInfo = await prepareLab(); }
+    catch (err) { log(c, '✗ ' + err.message, 'err'); return; }
+    tab = { id: labInfo.vmTabId, url: labInfo.instructionsUrl };
+  } else {
+    [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab) await chrome.tabs.update(tab.id, { active: true }); // opencli binds the active tab
+  }
   running = true; $('go').disabled = true; render();
   if (!c.sessionId) c.title = task.slice(0, 60);
   c.updated = Date.now();
@@ -110,7 +143,7 @@ async function go() {
   try {
     const r = await fetch(`${RUNNER}/task`, {
       method: 'POST', headers: { ...auth(), 'content-type': 'application/json' },
-      body: JSON.stringify({ task, tabUrl: tab?.url, model: $('model').value, maxBudgetUsd: Number($('budget').value), sessionId: c.sessionId, effort: $('effort').value, search: $('search').checked }),
+      body: JSON.stringify({ task, tabUrl: tab?.url, model: $('model').value, maxBudgetUsd: Number($('budget').value), sessionId: c.sessionId, effort: $('effort').value, search: $('search').checked, lab }),
     });
     if (!r.ok) throw new Error((await r.json()).error);
     const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -143,11 +176,12 @@ async function stop() {
 
 let effortByModel = {};
 const showEffort = () => { $('effort').value = effortByModel[$('model').value] || 'low'; };
-chrome.storage.local.get(['token', 'model', 'budget', 'convos', 'current', 'search', 'effortByModel'], s => {
+chrome.storage.local.get(['token', 'model', 'budget', 'convos', 'current', 'search', 'lab', 'effortByModel'], s => {
   if (s.token) $('token').value = s.token;
   if (s.model) $('model').value = s.model;
   if (s.budget) $('budget').value = s.budget;
   $('search').checked = !!s.search;
+  $('lab').checked = !!s.lab;
   effortByModel = s.effortByModel || {};
   showEffort();
   convos = s.convos ?? {};
@@ -175,6 +209,7 @@ chrome.storage.local.get(['fxCorner', 'details'], s => {
 $('model').onchange = () => { showEffort(); saveSettings(); };
 $('effort').onchange = () => { effortByModel[$('model').value] = $('effort').value; chrome.storage.local.set({ effortByModel }); saveSettings(); };
 $('search').onchange = saveSettings;
+$('lab').onchange = saveSettings;
 $('budget').onchange = saveSettings;
 $('details').onchange = () => { chrome.storage.local.set({ details: $('details').checked }); document.body.classList.toggle('details', $('details').checked); };
 $('fxCorner').onchange = () => chrome.storage.local.set({ fxCorner: $('fxCorner').value });

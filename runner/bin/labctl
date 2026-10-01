@@ -1,0 +1,6 @@
+#!/usr/bin/env node
+// Thin PATH shim so the agent can run `labctl <session> <cmd> ...` like `ttw`.
+// The real implementation lives in runner/lab/labctl.mjs (kept there so it can be
+// `node runner/lab/labctl.mjs ...`-tested directly too); process.argv is unaffected by
+// which file does the importing, so labctl.mjs's own argv parsing just works here.
+import('../lab/labctl.mjs');
