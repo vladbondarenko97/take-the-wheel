@@ -57,6 +57,7 @@
     <select id="effort" title="reasoning effort (remembered per model)"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select>
     <label title="One web search per question it is unsure about"><input id="search" type="checkbox"> Search</label>
     <label title="Drive a canvas-based VM lab console across two tabs: the lab's instructions tab and the VM console's own 'Open in New Window' popout. Open both before pressing Go."><input id="lab" type="checkbox"> Lab mode</label>
+    <label title="Lab mode only: every VM screenshot/verification goes through your local Ollama vision model instead of Claude's own (much pricier) vision. The Read tool is unavailable in this mode, so it can't fall back."><input id="localVision" type="checkbox"> Local vision</label>
     $<input id="budget" type="number" step="0.05" min="0.05" value="0.50">
     <button id="go">Go</button><button id="stop">Stop</button>
   </div>

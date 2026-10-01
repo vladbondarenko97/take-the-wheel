@@ -19,8 +19,8 @@
 //   - typing arbitrary text: opencli's own `keys` command does NOT reach the VM (tested:
 //     real DOM focus forced onto the canvas, still nothing reaches it). The Virtual
 //     Keyboard's per-key buttons are the platform's actual supported input channel.
-//   - `locate`: point a local vision model (Ollama) at a screenshot instead of eyeballing
-//     pixel coordinates by hand.
+//   - `locate` and `look`: point a local vision model (Ollama) at a screenshot instead of
+//     eyeballing pixel coordinates by hand, or asking a frontier model's Read tool to look.
 //
 // Usage:
 //   labctl <session> shot <path>             screenshot (plain opencli passthrough)
@@ -35,14 +35,15 @@
 //   labctl <session> username                 click the platform's "Type Username" helper
 //   labctl <session> password                 click the platform's "Type Password" helper
 //   labctl <session> locate <description>     screenshot -> local vision model -> click
+//   labctl <session> look <question>          screenshot -> local vision model -> text answer
 import { execFileSync } from 'node:child_process';
-import { writeFileSync, readFileSync, unlinkSync } from 'node:fs';
+import { readFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const [session, cmd, ...rest] = process.argv.slice(2);
 if (!session || !cmd) {
-  console.error('usage: labctl <session> <shot|click|key|type|username|password|locate> [args...]');
+  console.error('usage: labctl <session> <shot|click|key|type|username|password|locate|look> [args...]');
   process.exit(1);
 }
 
@@ -109,25 +110,32 @@ function clickNative(vx, vy) {
 const OLLAMA_URL = process.env.LABCTL_OLLAMA_URL ?? 'http://localhost:11434/api/generate';
 const OLLAMA_MODEL = process.env.LABCTL_VISION_MODEL ?? 'qwen3-vl:30b-a3b';
 
-async function locate(description) {
-  const info = canvasInfo();
+function screenshotBase64() {
   const shotPath = join(tmpdir(), `labctl-${Date.now()}.png`);
   execFileSync('opencli', ['browser', session, 'screenshot', shotPath]);
   const image = readFileSync(shotPath).toString('base64');
   unlinkSync(shotPath);
+  return image;
+}
 
-  const prompt = `This is a screenshot of a browser tab, ${Math.round(info.x + info.w)}x${Math.round(info.y + info.h)} pixels. ` +
-    `Reply with ONLY a JSON object {"x": <int>, "y": <int>} giving the pixel coordinates of the ` +
-    `center of: ${description}. Use pixel coordinates within this image, not percentages.`;
-
+async function askVision(prompt, image, { json = false, think = false } = {}) {
   const res = await fetch(OLLAMA_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model: OLLAMA_MODEL, prompt, images: [image], format: 'json', stream: false, think: false }),
+    body: JSON.stringify({ model: OLLAMA_MODEL, prompt, images: [image], stream: false, think, ...(json ? { format: 'json' } : {}) }),
   });
   if (!res.ok) throw new Error(`ollama request failed: ${res.status} ${await res.text()}`);
-  const { response } = await res.json();
-  const { x, y } = JSON.parse(response);
+  return (await res.json()).response;
+}
+
+async function locate(description) {
+  const info = canvasInfo();
+  const image = screenshotBase64();
+  const prompt = `This is a screenshot of a browser tab, ${Math.round(info.x + info.w)}x${Math.round(info.y + info.h)} pixels. ` +
+    `Reply with ONLY a JSON object {"x": <int>, "y": <int>} giving the pixel coordinates of the ` +
+    `center of: ${description}. Use pixel coordinates within this image, not percentages.`;
+  // No thinking here: coordinates are cheap to get right and speed matters more for a click.
+  const { x, y } = JSON.parse(await askVision(prompt, image, { json: true }));
 
   // Model reasons in full-screenshot pixels; convert into VM-native pixels via the canvas's
   // on-page rect (subtract its offset, then scale displayed size -> native resolution).
@@ -135,6 +143,18 @@ async function locate(description) {
   const vy = ((y - info.y) / info.h) * info.attrH;
   console.error(`locate: "${description}" -> screenshot (${x},${y}) -> VM (${Math.round(vx)},${Math.round(vy)})`);
   clickNative(Math.round(vx), Math.round(vy));
+}
+
+// Free-form "what's on screen" / "did X happen" / "read this text back to me" -- answered by
+// the local vision model, returned as plain text. No click, no coordinates: this is the
+// replacement for `shot` + Claude's own Read tool, so verification/reading never needs a
+// frontier-model vision call.
+async function look(question) {
+  const image = screenshotBase64();
+  // Thinking on here (unlike locate): this is a reasoning/reading task, not a quick lookup,
+  // and a terse one-word answer is actively unhelpful for verification.
+  const answer = await askVision(`You're looking at a screenshot of a virtual machine console inside a browser tab. ${question}`, image, { think: true });
+  console.log(answer.trim());
 }
 
 switch (cmd) {
@@ -166,6 +186,10 @@ switch (cmd) {
 
   case 'locate':
     await locate(rest.join(' '));
+    break;
+
+  case 'look':
+    await look(rest.join(' '));
     break;
 
   default:

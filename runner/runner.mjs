@@ -50,11 +50,12 @@ function describe(cmd, st) {
     else if (/^ttw note/.test(part)) steps.push('📝 Saving notes about this site');
     else if ((m = part.match(/^labctl \S+ type (.+)/))) steps.push(`⌨ Typing ${m[1]}`);
     else if ((m = part.match(/^labctl \S+ key (.+)/))) steps.push(`Pressing ${m[1]}`);
-    else if ((m = part.match(/^labctl \S+ locate (.+)/))) steps.push(`👁 Finding: ${m[1]}`);
+    else if ((m = part.match(/^labctl \S+ locate (.+)/))) steps.push(`👁 Finding (local vision): ${m[1]}`);
+    else if ((m = part.match(/^labctl \S+ look (.+)/))) steps.push(`👁 Looking at the VM (local vision): ${m[1]}`);
     else if (/^labctl \S+ click/.test(part)) steps.push('Clicking the VM screen');
     else if (/^labctl \S+ username/.test(part)) steps.push('Typing the lab username');
     else if (/^labctl \S+ password/.test(part)) steps.push('Typing the lab password');
-    else if (/^labctl \S+ shot/.test(part)) steps.push('👁 Looking at the VM screen');
+    else if (/^labctl \S+ shot/.test(part)) steps.push('Screenshotting the VM screen');
     else if ((m = part.match(/^opencli browser \S+ open\s+["']?([^"'\s]+)/))) { try { steps.push(`Opening ${new URL(m[1]).hostname}`); } catch { steps.push('Opening a page'); } }
     else if ((m = part.match(/^opencli browser \S+ keys\s+(\S+)/))) steps.push(`Pressing ${m[1]}`);
     else if ((m = part.match(/^opencli browser \S+ (\w+)/)) && OC[m[1]]) steps.push(OC[m[1]]);
@@ -90,7 +91,7 @@ function* events(msg, st) {
     if (c.type === 'tool_use') {
       const cmd = c.input?.command ?? '';
       yield { kind: 'tool', text: c.name === 'WebSearch' ? `WebSearch ${c.input?.query}` : c.name === 'Read' ? 'Read screenshot' : cmd || JSON.stringify(c.input) };
-      const steps = c.name === 'WebSearch' ? [`🔎 Searching: ${c.input?.query}`] : c.name === 'Read' ? ['👁 Looking at the page'] : describe(cmd, st);
+      const steps = c.name === 'WebSearch' ? [`🔎 Searching: ${c.input?.query}`] : c.name === 'Read' ? ['👁 Looking at the page (frontier vision)'] : describe(cmd, st);
       for (const t of steps) yield { kind: 'step', text: t };
     }
   }
@@ -108,7 +109,7 @@ function* events(msg, st) {
   }
 }
 
-function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5, sessionId, effort = 'low', search = false, lab = false }) {
+function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5, sessionId, effort = 'low', search = false, lab = false, localVision = false }) {
   if (!['low', 'medium', 'high'].includes(effort)) effort = 'low';
   // Submitting is only unlocked by the user's own words.
   const allowFinish = /\b(submit|finish|turn (it )?in|hand (it )?in)\b/i.test(task) && !/\b(don'?t|do not|never|without|not)\b[^.]{0,25}\b(submit|finish)/i.test(task);
@@ -119,13 +120,18 @@ function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5
   const tab = lab
     ? `Sessions "instructions" and "vm" are already bound to their tabs.`
     : `Current tab: ${tabUrl || 'unknown'}. First run: opencli browser ${SESSION} bind`;
+  // Only meaningful in lab mode: without it, "Read is denied" would otherwise look like a bug
+  // to the agent instead of the deliberate point of the checkbox.
+  const visionNote = lab && localVision ? ' Local vision is ON: the Read tool is unavailable here, use `labctl vm look`/`locate` for everything visual.' : '';
   const wrapped = sessionId
-    ? `Follow-up in the same conversation. ${lab ? tab : `${tab} again (the tab was released between messages)`} and re-read the page before acting. User: ${task}`
-    : `${lab ? '' : `Session name: ${SESSION}. `}${tab}. Task: ${task}`;
+    ? `Follow-up in the same conversation. ${lab ? tab : `${tab} again (the tab was released between messages)`} and re-read the page before acting.${visionNote} User: ${task}`
+    : `${lab ? '' : `Session name: ${SESSION}. `}${tab}.${visionNote} Task: ${task}`;
+  const grantRead = !(lab && localVision); // local vision mode: no Read tool at all, so the agent can't even attempt frontier-model vision
+  const tools = ['Bash', ...(grantRead ? ['Read'] : []), ...(search ? ['WebSearch'] : [])].join(',');
   child = spawn('claude', ['-p', wrapped, ...(sessionId ? ['--resume', sessionId] : []),
     '--model', ['sonnet', 'opus'].includes(model) ? model : 'haiku', '--effort', effort,
-    '--system-prompt', lab ? PROMPT_LAB : PROMPT, '--tools', search ? 'Bash,Read,WebSearch' : 'Bash,Read',
-    '--allowedTools', 'Bash(opencli *)', 'Bash(ttw *)', ...(lab ? ['Bash(labctl *)'] : []), `Read(/${SHOTS}/**)`, ...(search ? ['WebSearch'] : []),
+    '--system-prompt', lab ? PROMPT_LAB : PROMPT, '--tools', tools,
+    '--allowedTools', 'Bash(opencli *)', 'Bash(ttw *)', ...(lab ? ['Bash(labctl *)'] : []), ...(grantRead ? [`Read(/${SHOTS}/**)`] : []), ...(search ? ['WebSearch'] : []),
     '--disallowedTools', 'Bash(opencli browser task screenshot *)', // screenshots only via `ttw look`, into SHOTS (lab mode uses labctl's own screenshot path instead)
     '--permission-mode', 'dontAsk', '--max-turns', '60', '--max-budget-usd', String(Number(maxBudgetUsd) || 0.5),
     '--system-prompt-snapshot', 'off', // follow-ups use the current prompt, not the one recorded when the conversation began
@@ -134,7 +140,7 @@ function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5
   const me = child;
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
   const send = ev => res.write(`data: ${JSON.stringify(ev)}\n\n`);
-  send({ kind: 'start', text: `${model} · ${effort} effort · search ${search ? 'on' : 'off'}${lab ? ' · lab mode' : ''} · $${maxBudgetUsd} cap` });
+  send({ kind: 'start', text: `${model} · ${effort} effort · search ${search ? 'on' : 'off'}${lab ? ' · lab mode' : ''}${lab && localVision ? ' · local vision' : ''} · $${maxBudgetUsd} cap` });
   let buf = '', errBuf = '';
   const st = { labels: {}, q: '' };
   me.stdout.on('data', d => {

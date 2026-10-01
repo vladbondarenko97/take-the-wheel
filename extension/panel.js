@@ -9,15 +9,15 @@ const save = () => chrome.storage.local.set({ convos, current });
 const cur = () => convos[current];
 
 // Model / effort / search / budget are saved per conversation; a new one starts with the current values.
-const readSettings = () => ({ model: $('model').value, effort: $('effort').value, search: $('search').checked, lab: $('lab').checked, budget: $('budget').value });
+const readSettings = () => ({ model: $('model').value, effort: $('effort').value, search: $('search').checked, lab: $('lab').checked, localVision: $('localVision').checked, budget: $('budget').value });
 function applySettings(st) {
   if (!st) return;
-  $('model').value = st.model; $('effort').value = st.effort; $('search').checked = !!st.search; $('lab').checked = !!st.lab; $('budget').value = st.budget;
+  $('model').value = st.model; $('effort').value = st.effort; $('search').checked = !!st.search; $('lab').checked = !!st.lab; $('localVision').checked = !!st.localVision; $('budget').value = st.budget;
 }
 function saveSettings() {
   if (!cur()) return;
   cur().settings = readSettings();
-  chrome.storage.local.set({ model: $('model').value, budget: $('budget').value, search: $('search').checked, lab: $('lab').checked }); // defaults for new conversations
+  chrome.storage.local.set({ model: $('model').value, budget: $('budget').value, search: $('search').checked, lab: $('lab').checked, localVision: $('localVision').checked }); // defaults for new conversations
   save();
 }
 
@@ -143,7 +143,7 @@ async function go() {
   try {
     const r = await fetch(`${RUNNER}/task`, {
       method: 'POST', headers: { ...auth(), 'content-type': 'application/json' },
-      body: JSON.stringify({ task, tabUrl: tab?.url, model: $('model').value, maxBudgetUsd: Number($('budget').value), sessionId: c.sessionId, effort: $('effort').value, search: $('search').checked, lab }),
+      body: JSON.stringify({ task, tabUrl: tab?.url, model: $('model').value, maxBudgetUsd: Number($('budget').value), sessionId: c.sessionId, effort: $('effort').value, search: $('search').checked, lab, localVision: $('localVision').checked }),
     });
     if (!r.ok) throw new Error((await r.json()).error);
     const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -176,12 +176,13 @@ async function stop() {
 
 let effortByModel = {};
 const showEffort = () => { $('effort').value = effortByModel[$('model').value] || 'low'; };
-chrome.storage.local.get(['token', 'model', 'budget', 'convos', 'current', 'search', 'lab', 'effortByModel'], s => {
+chrome.storage.local.get(['token', 'model', 'budget', 'convos', 'current', 'search', 'lab', 'localVision', 'effortByModel'], s => {
   if (s.token) $('token').value = s.token;
   if (s.model) $('model').value = s.model;
   if (s.budget) $('budget').value = s.budget;
   $('search').checked = !!s.search;
   $('lab').checked = !!s.lab;
+  $('localVision').checked = !!s.localVision;
   effortByModel = s.effortByModel || {};
   showEffort();
   convos = s.convos ?? {};
@@ -210,6 +211,7 @@ $('model').onchange = () => { showEffort(); saveSettings(); };
 $('effort').onchange = () => { effortByModel[$('model').value] = $('effort').value; chrome.storage.local.set({ effortByModel }); saveSettings(); };
 $('search').onchange = saveSettings;
 $('lab').onchange = saveSettings;
+$('localVision').onchange = saveSettings;
 $('budget').onchange = saveSettings;
 $('details').onchange = () => { chrome.storage.local.set({ details: $('details').checked }); document.body.classList.toggle('details', $('details').checked); };
 $('fxCorner').onchange = () => chrome.storage.local.set({ fxCorner: $('fxCorner').value });
