@@ -14,6 +14,7 @@ const PROMPT = readFileSync(join(HERE, 'agent-prompt.md'), 'utf8');
 const PROMPT_LAB = readFileSync(join(HERE, 'lab-agent-prompt.md'), 'utf8');
 const LAB_SESSIONS = ['instructions', 'vm'];
 const DENY = JSON.parse(readFileSync(join(HERE, 'denylist.json'), 'utf8'));
+const VISION_MODEL = process.env.LABCTL_VISION_MODEL ?? 'qwen3-vl:30b-a3b'; // keep in sync with labctl.mjs's own default
 // Empty cwd: no stray CLAUDE.md / .mcp.json / hooks. Fixed path, because claude --resume looks sessions up by cwd.
 const SANDBOX = join(homedir(), '.take-the-wheel', 'sandbox');
 mkdirSync(SANDBOX, { recursive: true });
@@ -180,6 +181,12 @@ http.createServer(async (req, res) => {
     // window/tab (chrome.windows.update + chrome.tabs.update) immediately before this call.
     const out = await run('opencli', ['browser', body.session, 'bind']);
     try { return json(res, 200, JSON.parse(out)); } catch { return json(res, 502, { error: out.trim() }); }
+  }
+  if (req.method === 'POST' && path === '/lab/vision/unload') {
+    // ~2s to reload later (measured: load_duration on this machine), so there's no real cost
+    // to freeing the ~20GB immediately when the user unchecks Local vision.
+    const out = await run('ollama', ['stop', VISION_MODEL]);
+    return json(res, 200, { unloaded: true, out: out.trim() });
   }
   if (req.method === 'POST' && path === '/stop') {
     if (child) child.kill('SIGINT');

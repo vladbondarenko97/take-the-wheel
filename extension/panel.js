@@ -211,7 +211,12 @@ $('model').onchange = () => { showEffort(); saveSettings(); };
 $('effort').onchange = () => { effortByModel[$('model').value] = $('effort').value; chrome.storage.local.set({ effortByModel }); saveSettings(); };
 $('search').onchange = saveSettings;
 $('lab').onchange = saveSettings;
-$('localVision').onchange = saveSettings;
+$('localVision').onchange = () => {
+  saveSettings();
+  // Unchecking means "I'm done with this for now" -- free the ~20GB right away. Reloading
+  // later costs ~2s (measured), so there's no reason to keep it warm on the chance of reuse.
+  if (!$('localVision').checked) fetch(`${RUNNER}/lab/vision/unload`, { method: 'POST', headers: auth() }).catch(() => {});
+};
 $('budget').onchange = saveSettings;
 $('details').onchange = () => { chrome.storage.local.set({ details: $('details').checked }); document.body.classList.toggle('details', $('details').checked); };
 $('fxCorner').onchange = () => chrome.storage.local.set({ fxCorner: $('fxCorner').value });
