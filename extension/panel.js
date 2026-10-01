@@ -110,6 +110,10 @@ async function prepareLab() {
     const missing = [!instructions && 'the lab tab', !vm && "the VM's \"Open in New Window\" popout"].filter(Boolean).join(' and ');
     throw new Error(`Lab mode: couldn't find ${missing}. Open the lab, then its Resources tab -> Open in New Window, then try again.`);
   }
+  // Small window: the console typically renegotiates the guest's own display resolution to
+  // fit it ("Fit Machine to Window"), so this also shrinks every screenshot the vision model
+  // has to process -- faster and cheaper per look/locate call, not just tidier on screen.
+  await chrome.windows.update(vm.windowId, { width: 800, height: 600 });
   for (const [session, tab] of [['instructions', instructions], ['vm', vm]]) {
     await chrome.windows.update(tab.windowId, { focused: true });
     await chrome.tabs.update(tab.id, { active: true });
