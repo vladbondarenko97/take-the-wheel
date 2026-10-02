@@ -44,6 +44,13 @@
   </select>
   <label><input id="details" type="checkbox"> Show command details</label>
 </div>
+<div class="row top" id="visionSettings" hidden>
+  Local vision server:
+  <input id="ollamaUrl" style="flex: 2; min-width: 0" title="Ollama address, e.g. http://my-mac-mini:11434 or a Tailscale IP (empty = runner default)">
+  <input id="visionModel" style="flex: 1; min-width: 0" title="Ollama vision model (empty = runner default)">
+  <button id="visionTest">Test</button>
+  <span id="visionResult"></span>
+</div>
 <div class="row top">
   <select id="convo" title="conversations"></select>
   <button id="new" title="new conversation">＋</button>

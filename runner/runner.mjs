@@ -7,6 +7,13 @@ import { homedir } from 'node:os';
 import { join, delimiter } from 'node:path';
 
 const HERE = import.meta.dirname, PORT = 19826, SESSION = 'task';
+// Optional per-machine settings, one KEY=VALUE per line (e.g. LABCTL_OLLAMA_URL for Ollama on another machine).
+// Real environment variables win. The agent's tools (labctl) inherit these through ENV below.
+const ENV_FILE = join(homedir(), '.take-the-wheel', 'env');
+if (existsSync(ENV_FILE)) for (const l of readFileSync(ENV_FILE, 'utf8').split('\n')) {
+  const m = l.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/);
+  if (m && !(m[1] in process.env)) process.env[m[1]] = m[2];
+}
 const TOKEN_FILE = join(HERE, '.token');
 if (!existsSync(TOKEN_FILE)) writeFileSync(TOKEN_FILE, randomBytes(16).toString('hex'), { mode: 0o600 });
 const TOKEN = readFileSync(TOKEN_FILE, 'utf8').trim();
@@ -15,6 +22,17 @@ const PROMPT_LAB = readFileSync(join(HERE, 'lab-agent-prompt.md'), 'utf8');
 const LAB_SESSIONS = ['instructions', 'vm'];
 const DENY = JSON.parse(readFileSync(join(HERE, 'denylist.json'), 'utf8'));
 const VISION_MODEL = process.env.LABCTL_VISION_MODEL ?? 'qwen3-vl:30b-a3b'; // keep in sync with labctl.mjs's own default
+const OLLAMA_URL = process.env.LABCTL_OLLAMA_URL ?? 'http://localhost:11434/api/generate'; // same default as labctl.mjs
+// The panel's settings can override the vision server/model per request; empty means the defaults above.
+// Accepts "host:port", "http://host:port" or a full ".../api/generate" URL.
+function visionCfg(body = {}) {
+  let url = String(body.ollamaUrl || '').trim().replace(/\/+$/, '');
+  if (url && !/^https?:\/\//i.test(url)) url = 'http://' + url;
+  if (url) { try { new URL(url); } catch { url = ''; } }
+  if (url && !/\/api\/generate$/.test(url)) url += '/api/generate';
+  const model = String(body.visionModel || '').trim();
+  return { url: url || OLLAMA_URL, model: /^[\w.:\/-]{1,100}$/.test(model) ? model : VISION_MODEL };
+}
 // Empty cwd: no stray CLAUDE.md / .mcp.json / hooks. Fixed path, because claude --resume looks sessions up by cwd.
 const SANDBOX = join(homedir(), '.take-the-wheel', 'sandbox');
 mkdirSync(SANDBOX, { recursive: true });
@@ -115,7 +133,8 @@ function* events(msg, st) {
   }
 }
 
-function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5, sessionId, effort = 'low', search = false, lab = false, localVision = false }) {
+function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5, sessionId, effort = 'low', search = false, lab = false, localVision = false, ollamaUrl, visionModel }) {
+  const vision = visionCfg({ ollamaUrl, visionModel });
   if (!['low', 'medium', 'high'].includes(effort)) effort = 'low';
   // Submitting is only unlocked by the user's own words.
   const allowFinish = /\b(submit|finish|turn (it )?in|hand (it )?in)\b/i.test(task) && !/\b(don'?t|do not|never|without|not)\b[^.]{0,25}\b(submit|finish)/i.test(task);
@@ -142,7 +161,7 @@ function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5
     '--permission-mode', 'dontAsk', '--max-turns', '60', '--max-budget-usd', String(Number(maxBudgetUsd) || 0.5),
     '--system-prompt-snapshot', 'off', // follow-ups use the current prompt, not the one recorded when the conversation began
     '--output-format', 'stream-json', '--verbose'],
-    { cwd: SANDBOX, env: { ...ENV, TTW_RUN_ID: randomBytes(6).toString('hex'), TTW_ALLOW_FINISH: allowFinish ? '1' : '0' }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
+    { cwd: SANDBOX, env: { ...ENV, TTW_RUN_ID: randomBytes(6).toString('hex'), TTW_ALLOW_FINISH: allowFinish ? '1' : '0', LABCTL_OLLAMA_URL: vision.url, LABCTL_VISION_MODEL: vision.model }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
   const me = child;
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
   const send = ev => res.write(`data: ${JSON.stringify(ev)}\n\n`);
@@ -169,7 +188,8 @@ http.createServer(async (req, res) => {
   const path = new URL(req.url, 'http://x').pathname;
   if (req.method === 'GET' && path === '/health') {
     const [doc, ver] = await Promise.all([run('opencli', ['doctor']), run('claude', ['--version'])]);
-    return json(res, 200, { ok: !/\[(MISSING|FAIL)\]/.test(doc) && /\d/.test(ver), opencli: doc.trim(), claude: ver.trim(), busy: !!child });
+    return json(res, 200, { ok: !/\[(MISSING|FAIL)\]/.test(doc) && /\d/.test(ver), opencli: doc.trim(), claude: ver.trim(), busy: !!child,
+      vision: { url: OLLAMA_URL.replace(/\/api\/generate$/, ''), model: VISION_MODEL } }); // defaults shown as placeholders in the panel
   }
   if (req.method === 'POST' && path === '/task') {
     const body = await readBody(req);
@@ -190,8 +210,21 @@ http.createServer(async (req, res) => {
   if (req.method === 'POST' && path === '/lab/vision/unload') {
     // ~2s to reload later (measured: load_duration on this machine), so there's no real cost
     // to freeing the ~20GB immediately when the user unchecks Local vision.
-    const out = await run('ollama', ['stop', VISION_MODEL]);
-    return json(res, 200, { unloaded: true, out: out.trim() });
+    // Over HTTP (keep_alive: 0 unloads the model), so it also works when Ollama runs on another machine.
+    const v = visionCfg(await readBody(req));
+    const out = await fetch(v.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: v.model, keep_alive: 0 }) })
+      .then(r => r.text()).catch(e => String(e));
+    return json(res, 200, { unloaded: true, out: out.trim().slice(0, 200) });
+  }
+  if (req.method === 'POST' && path === '/lab/vision/test') {
+    // Settings "Test" button: is the server reachable, and does it have the model?
+    const v = visionCfg(await readBody(req));
+    const base = v.url.replace(/\/api\/generate$/, '');
+    try {
+      const r = await fetch(base + '/api/tags', { signal: AbortSignal.timeout(6000) });
+      const names = (await r.json()).models?.map(m => m.name) ?? [];
+      return json(res, 200, { reachable: true, base, model: v.model, hasModel: names.includes(v.model), models: names.length });
+    } catch (e) { return json(res, 200, { reachable: false, base, model: v.model, error: String(e.message || e).slice(0, 120) }); }
   }
   if (req.method === 'POST' && path === '/stop') {
     if (child) child.kill('SIGINT');
