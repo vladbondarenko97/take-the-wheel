@@ -67,6 +67,7 @@ async function health() {
     const h = await r.json();
     $('dot').className = r.ok && h.ok ? 'ok' : 'bad';
     $('dot').title = r.ok ? `${h.claude}\n${h.opencli}` : h.error;
+    if (h.vision) { $('ollamaUrl').placeholder = h.vision.url + ' (default)'; $('visionModel').placeholder = h.vision.model + ' (default)'; }
   } catch { $('dot').className = 'bad'; $('dot').title = 'runner not reachable: run `node runner/runner.mjs`'; }
 }
 
@@ -148,7 +149,7 @@ async function go() {
   try {
     const r = await fetch(`${RUNNER}/task`, {
       method: 'POST', headers: { ...auth(), 'content-type': 'application/json' },
-      body: JSON.stringify({ task, tabUrl: tab?.url, model: $('model').value, maxBudgetUsd: Number($('budget').value), sessionId: c.sessionId, effort: $('effort').value, search: $('search').checked, lab, localVision: $('localVision').checked }),
+      body: JSON.stringify({ task, tabUrl: tab?.url, model: $('model').value, maxBudgetUsd: Number($('budget').value), sessionId: c.sessionId, effort: $('effort').value, search: $('search').checked, lab, localVision: $('localVision').checked, ...visionBody() }),
     });
     if (!r.ok) throw new Error((await r.json()).error);
     const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -206,7 +207,19 @@ $('del').onclick = () => {
 };
 chrome.runtime.connect({ name: 'panel' }); // background turns effects off if the panel closes mid-run
 chrome.runtime.onMessage.addListener(m => { if (m === 'ttw:stop' && running) stop(); }); // × on the page's driving pill
-$('gear').onclick = () => { $('settings').hidden = !$('settings').hidden; };
+$('gear').onclick = () => { $('settings').hidden = $('visionSettings').hidden = !$('settings').hidden; };
+// Local vision server/model: global settings (not per conversation); empty = the runner's defaults.
+const visionBody = () => ({ ollamaUrl: $('ollamaUrl').value.trim(), visionModel: $('visionModel').value.trim() });
+chrome.storage.local.get(['ollamaUrl', 'visionModel'], s => { $('ollamaUrl').value = s.ollamaUrl || ''; $('visionModel').value = s.visionModel || ''; });
+for (const id of ['ollamaUrl', 'visionModel']) $(id).onchange = () => chrome.storage.local.set({ [id]: $(id).value.trim() });
+$('visionTest').onclick = async () => {
+  $('visionResult').textContent = '…';
+  try {
+    const r = await (await fetch(`${RUNNER}/lab/vision/test`, { method: 'POST', headers: { ...auth(), 'content-type': 'application/json' }, body: JSON.stringify(visionBody()) })).json();
+    $('visionResult').textContent = !r.reachable ? `✗ can't reach ${r.base}` : r.hasModel ? `✓ ${r.model} ready` : `⚠ reachable, but no ${r.model} (${r.models} models)`;
+    $('visionResult').title = r.error || r.base;
+  } catch (err) { $('visionResult').textContent = '✗ runner not reachable'; }
+};
 chrome.storage.local.get(['fxCorner', 'details'], s => {
   $('fxCorner').value = s.fxCorner || 'tr';
   $('details').checked = !!s.details; document.body.classList.toggle('details', !!s.details);
@@ -220,7 +233,7 @@ $('localVision').onchange = () => {
   saveSettings();
   // Unchecking means "I'm done with this for now" -- free the ~20GB right away. Reloading
   // later costs ~2s (measured), so there's no reason to keep it warm on the chance of reuse.
-  if (!$('localVision').checked) fetch(`${RUNNER}/lab/vision/unload`, { method: 'POST', headers: auth() }).catch(() => {});
+  if (!$('localVision').checked) fetch(`${RUNNER}/lab/vision/unload`, { method: 'POST', headers: { ...auth(), 'content-type': 'application/json' }, body: JSON.stringify(visionBody()) }).catch(() => {});
 };
 $('budget').onchange = saveSettings;
 $('details').onchange = () => { chrome.storage.local.set({ details: $('details').checked }); document.body.classList.toggle('details', $('details').checked); };
