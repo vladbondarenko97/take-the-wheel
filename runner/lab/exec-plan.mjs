@@ -14,6 +14,11 @@
 //   { "do": "click", "arg": [vx, vy] }
 //   { "do": "locate", "arg": "<description>" }
 //   { "do": "username" } / { "do": "password" }
+//   { "do": "typeHint", "arg": "<exact text, verbatim from a lab instruction>" } -- click the
+//     instructions page's own "Type Text" button for that text instead of typing it character
+//     by character; confirmed live, faster and more reliable whenever the text is shown
+//     verbatim in the hints. Always runs against the `instructions` session, regardless of
+//     which session this plan is otherwise executing against.
 //   { "do": "check", "question": "<yes/no question>", "expect": "yes" | "no" | "<regex>" }
 //
 // Usage: exec-plan <session> <plan.json>
@@ -34,6 +39,9 @@ const LABCTL = join(dirname(fileURLToPath(import.meta.url)), 'labctl.mjs');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const labctl = args => execFileSync('node', [LABCTL, session, ...args], { encoding: 'utf8' });
+// typeHint always targets the instructions page's own DOM, regardless of which session (vm,
+// normally) this plan otherwise drives -- that's where the "Type Text" buttons live.
+const labctlInstructions = args => execFileSync('node', [LABCTL, 'instructions', ...args], { encoding: 'utf8' });
 
 // Binary (yes/no) checks are far more reliable from a vision model than "read this text
 // exactly" + regex matching -- so `expect` is almost always "yes"/"no"; a regex is still
@@ -44,14 +52,20 @@ function matches(answer, expect) {
   return new RegExp(expect, 'i').test(answer);
 }
 
-// One retry before declaring failure: absorbs a command still running / a frame mid-render,
-// not just real bugs -- a known failure mode here (a prior screenshot caught a mid-transition
-// video frame and gave a stale answer).
-async function runCheck(step, attempt = 0) {
-  await sleep(700); // let the VM settle before reading it
-  const answer = labctl(['look', step.question]).trim();
-  if (matches(answer, step.expect)) return { ok: true, answer };
-  if (attempt === 0) return runCheck(step, 1);
+// Backoff retries before declaring failure: absorbs real lag, not just a frame mid-render.
+// Measured live: on a slow/congested connection, keystrokes and an Enter press were still
+// "in flight" *several seconds* after being sent -- a single fixed short wait isn't enough,
+// it just reads stale state confidently. Increasing delays (1s, 2s, 4s = 7s max) cost nothing
+// extra on a normal responsive VM (the first attempt still succeeds immediately), and only
+// spend the extra time in the case that actually needs it.
+const CHECK_DELAYS_MS = [1000, 2000, 4000];
+async function runCheck(step) {
+  let answer = '';
+  for (const delay of CHECK_DELAYS_MS) {
+    await sleep(delay);
+    answer = labctl(['look', step.question]).trim();
+    if (matches(answer, step.expect)) return { ok: true, answer };
+  }
   return { ok: false, answer };
 }
 
@@ -69,18 +83,30 @@ function fail(i, step, extra) {
   process.exit(1);
 }
 
+// A small pause after every action (not check): measured live that an Enter sent right after
+// a typed command could still be "in flight" when the next step fired, racing ahead of the
+// command it was meant to submit. Cheap insurance against flooding the same input channel.
+const SETTLE_MS = 300;
+
+// One line per completed step, printed as it happens (not just the final result) -- the
+// caller (runner.mjs) streams these to the panel so a plan's execution isn't a silent black
+// box between "started" and "done 30s later".
+const progress = (i, step, extra) => console.log(JSON.stringify({ progress: true, i, step, ...extra }));
+
 let i = 0;
 for (const step of plan.steps) {
   try {
     if (step.do === 'check') {
       const result = await runCheck(step);
       if (!result.ok) fail(i, step, { actual: result.answer });
-    } else if (step.do === 'type') labctl(['type', step.arg]);
-    else if (step.do === 'key') labctl(['key', step.arg]);
-    else if (step.do === 'click') labctl(['click', String(step.arg[0]), String(step.arg[1])]);
-    else if (step.do === 'locate') labctl(['locate', step.arg]);
-    else if (step.do === 'username') labctl(['username']);
-    else if (step.do === 'password') labctl(['password']);
+      progress(i, step, { answer: result.answer });
+    } else if (step.do === 'type') { labctl(['type', step.arg]); await sleep(SETTLE_MS); progress(i, step); }
+    else if (step.do === 'key') { labctl(['key', step.arg]); await sleep(SETTLE_MS); progress(i, step); }
+    else if (step.do === 'click') { labctl(['click', String(step.arg[0]), String(step.arg[1])]); await sleep(SETTLE_MS); progress(i, step); }
+    else if (step.do === 'locate') { labctl(['locate', step.arg]); await sleep(SETTLE_MS); progress(i, step); }
+    else if (step.do === 'username') { labctl(['username']); await sleep(SETTLE_MS); progress(i, step); }
+    else if (step.do === 'password') { labctl(['password']); await sleep(SETTLE_MS); progress(i, step); }
+    else if (step.do === 'typeHint') { labctlInstructions(['typeHint', step.arg]); await sleep(SETTLE_MS); progress(i, step); }
     else throw new Error(`unknown step.do: ${step.do}`);
   } catch (e) {
     fail(i, step, { error: cleanError(e) });

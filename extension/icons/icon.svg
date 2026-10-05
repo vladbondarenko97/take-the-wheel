@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <filter id="soft-shadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000000" flood-opacity="0.22"/>
+    </filter>
+    <radialGradient id="hub-sheen" cx="35%" cy="30%" r="75%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.9"/>
+      <stop offset="55%" stop-color="#f4f4f6" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#d9dadf" stop-opacity="0.35"/>
+    </radialGradient>
+  </defs>
+  <g filter="url(#soft-shadow)">
+    <rect x="56" y="5" width="16" height="42" rx="8" fill="#FF3B30" opacity="1" transform="rotate(0 64 64)"/>
+    <rect x="56" y="5" width="16" height="42" rx="8" fill="#FF9500" opacity="0.95" transform="rotate(45 64 64)"/>
+    <rect x="56" y="5" width="16" height="42" rx="8" fill="#FFCC00" opacity="0.89" transform="rotate(90 64 64)"/>
+    <rect x="56" y="5" width="16" height="42" rx="8" fill="#34C759" opacity="0.84" transform="rotate(135 64 64)"/>
+    <rect x="56" y="5" width="16" height="42" rx="8" fill="#32ADE6" opacity="0.78" transform="rotate(180 64 64)"/>
+    <rect x="56" y="5" width="16" height="42" rx="8" fill="#007AFF" opacity="0.73" transform="rotate(225 64 64)"/>
+    <rect x="56" y="5" width="16" height="42" rx="8" fill="#5856D6" opacity="0.67" transform="rotate(270 64 64)"/>
+    <rect x="56" y="5" width="16" height="42" rx="8" fill="#AF52DE" opacity="0.62" transform="rotate(315 64 64)"/>
+    <circle cx="64" cy="64" r="15" fill="url(#hub-sheen)"/>
+    <circle cx="64" cy="64" r="15" fill="none" stroke="#ffffff" stroke-opacity="0.6" stroke-width="1"/>
+  </g>
+</svg>

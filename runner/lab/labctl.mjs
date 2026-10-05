@@ -34,6 +34,11 @@
 //                                              character (letters, digits, space)
 //   labctl <session> username                 click the platform's "Type Username" helper
 //   labctl <session> password                 click the platform's "Type Password" helper
+//   labctl instructions typeHint <exact text> click the instructions page's "Type Text" button
+//                                              matching that exact text -- one click, no Virtual
+//                                              Keyboard, for any command/credential already
+//                                              shown verbatim in the lab's own hints. Always
+//                                              the `instructions` session, not `vm`.
 //   labctl <session> locate <description>     screenshot -> local vision model -> click
 //   labctl <session> look <question>          screenshot -> local vision model -> text answer
 import { execFileSync } from 'node:child_process';
@@ -43,7 +48,7 @@ import { join } from 'node:path';
 
 const [session, cmd, ...rest] = process.argv.slice(2);
 if (!session || !cmd) {
-  console.error('usage: labctl <session> <shot|click|key|type|username|password|locate|look> [args...]');
+  console.error('usage: labctl <session> <shot|click|key|type|username|password|typeHint|locate|look> [args...]');
   process.exit(1);
 }
 
@@ -136,6 +141,11 @@ async function locate(description) {
     `center of: ${description}. Use pixel coordinates within this image, not percentages.`;
   // No thinking here: coordinates are cheap to get right and speed matters more for a click.
   const { x, y } = JSON.parse(await askVision(prompt, image, { json: true }));
+  // A real failure seen here: the model found nothing (element genuinely not on this screen --
+  // e.g. asked to find UI that only exists in a different window) and returned non-numeric/
+  // missing coordinates, which previously reached clickNative and threw an opaque
+  // "Failed to construct MouseEvent" TypeError. Fail clearly instead.
+  if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error(`locate: model returned no usable coordinates for "${description}" (got ${JSON.stringify({ x, y })}) -- it's likely not on this screen at all`);
 
   // Model reasons in full-screenshot pixels; convert into VM-native pixels via the canvas's
   // on-page rect (subtract its offset, then scale displayed size -> native resolution).
@@ -191,6 +201,26 @@ switch (cmd) {
   case 'password':
     oc(['click', '#pastePassword']);
     break;
+
+  case 'typeHint': {
+    // Run against the `instructions` session (not `vm`): the lab platform's own instructions
+    // page has a "Type Text" button next to every credential/command it shows (same mechanism
+    // as pasteUsername/pastePassword, generalized to any text), which sends that exact text
+    // into the VM in one click -- confirmed live, far faster and more reliable than typing it
+    // character-by-character via the Virtual Keyboard. Only works for text verbatim in the
+    // instructions; exact match (case-sensitive) since e.g. "Wireshark" and "wireshark" are
+    // two different buttons for two different purposes. If several buttons share the exact
+    // same text (a repeated password, say), this clicks the first one in document order.
+    const text = rest.join(' ');
+    oc(['eval', `(function(){
+      var d=document.querySelector('#instructionsIFrame').contentDocument;
+      var els=[...d.querySelectorAll('[title="Type Text"]')];
+      var m=els.find(function(e){return e.textContent.trim()===${JSON.stringify(text)};});
+      if(!m) throw new Error('no Type Text button matching ' + ${JSON.stringify(text)} + ' (' + els.length + ' Type Text buttons on page)');
+      m.click();
+    })()`]);
+    break;
+  }
 
   case 'locate':
     await locate(rest.join(' '));
