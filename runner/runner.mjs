@@ -39,7 +39,9 @@ mkdirSync(SANDBOX, { recursive: true });
 const SHOTS = join(homedir(), '.take-the-wheel', 'shots'); // the only folder the agent may Read (screenshots from `ttw look`)
 mkdirSync(SHOTS, { recursive: true });
 const ENV = { ...process.env, PATH: `${join(HERE, 'bin')}${delimiter}${process.env.PATH}` }; // puts `ttw` on the agent's PATH
-delete ENV.CLAUDECODE; // allow starting the runner from inside a Claude Code shell
+// When the runner is started from inside a Claude Code session, don't let the agent inherit that session
+// (remote-control bridge, messaging socket, session ids): it attaches the child to it and bloats every run.
+for (const k of Object.keys(ENV)) if (k === 'CLAUDECODE' || k === 'CLAUDE_PID' || k === 'CLAUDE_EFFORT' || k.startsWith('CLAUDE_CODE_')) delete ENV[k];
 let child = null;
 
 const WIN = process.platform === 'win32'; // npm global installs are .cmd shims on Windows; spawn/execFile need shell:true to resolve them
@@ -160,6 +162,7 @@ function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5
     '--disallowedTools', 'Bash(opencli browser task screenshot *)', // screenshots only via `ttw look`, into SHOTS (lab mode uses labctl's own screenshot path instead)
     '--permission-mode', 'dontAsk', '--max-turns', '60', '--max-budget-usd', String(Number(maxBudgetUsd) || 0.5),
     '--system-prompt-snapshot', 'off', // follow-ups use the current prompt, not the one recorded when the conversation began
+    '--strict-mcp-config', '--disable-slash-commands', // no MCP connectors or skills: the agent uses neither, and they cost tokens every turn
     '--output-format', 'stream-json', '--verbose'],
     { cwd: SANDBOX, env: { ...ENV, TTW_RUN_ID: randomBytes(6).toString('hex'), TTW_ALLOW_FINISH: allowFinish ? '1' : '0', LABCTL_OLLAMA_URL: vision.url, LABCTL_VISION_MODEL: vision.model }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
   const me = child;
