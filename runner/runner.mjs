@@ -19,6 +19,7 @@ if (!existsSync(TOKEN_FILE)) writeFileSync(TOKEN_FILE, randomBytes(16).toString(
 const TOKEN = readFileSync(TOKEN_FILE, 'utf8').trim();
 const PROMPT = readFileSync(join(HERE, 'agent-prompt.md'), 'utf8');
 const PROMPT_LAB = readFileSync(join(HERE, 'lab-agent-prompt.md'), 'utf8');
+const PROMPT_PLAN = readFileSync(join(HERE, 'lab-plan-prompt.md'), 'utf8');
 const LAB_SESSIONS = ['instructions', 'vm'];
 const DENY = JSON.parse(readFileSync(join(HERE, 'denylist.json'), 'utf8'));
 const VISION_MODEL = process.env.LABCTL_VISION_MODEL ?? 'qwen3-vl:30b-a3b'; // keep in sync with labctl.mjs's own default
@@ -69,6 +70,7 @@ function describe(cmd, st) {
     } else if ((m = part.match(/^ttw fill (\S+) (.+)/))) steps.push(`⌨ Typing ${m[2]} into "${st.labels[m[1]] ?? m[1]}"`);
     else if (/^ttw page/.test(part)) steps.push('Reading the page');
     else if (/^ttw note/.test(part)) steps.push('📝 Saving notes about this site');
+    else if ((m = part.match(/^labctl instructions typeHint (.+)/))) steps.push(`⌨ Typing (from hint) ${m[1]}`);
     else if ((m = part.match(/^labctl \S+ type (.+)/))) steps.push(`⌨ Typing ${m[1]}`);
     else if ((m = part.match(/^labctl \S+ key (.+)/))) steps.push(`Pressing ${m[1]}`);
     else if ((m = part.match(/^labctl \S+ locate (.+)/))) steps.push(`👁 Finding (local vision): ${m[1]}`);
@@ -135,7 +137,7 @@ function* events(msg, st) {
   }
 }
 
-function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5, sessionId, effort = 'low', search = false, lab = false, localVision = false, ollamaUrl, visionModel }) {
+function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5, sessionId, effort = 'low', search = false, lab = false, localVision = false, useVision = true, ollamaUrl, visionModel }) {
   const vision = visionCfg({ ollamaUrl, visionModel });
   if (!['low', 'medium', 'high'].includes(effort)) effort = 'low';
   // Submitting is only unlocked by the user's own words.
@@ -147,13 +149,14 @@ function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5
   const tab = lab
     ? `Sessions "instructions" and "vm" are already bound to their tabs.`
     : `Current tab: ${tabUrl || 'unknown'}. First run: opencli browser ${SESSION} bind`;
-  // Only meaningful in lab mode: without it, "Read is denied" would otherwise look like a bug
-  // to the agent instead of the deliberate point of the checkbox.
-  const visionNote = lab && localVision ? ' Local vision is ON: the Read tool is unavailable here, use `labctl vm look`/`locate` for everything visual.' : '';
+  const grantRead = useVision && !(lab && localVision); // local vision mode: labctl's own vision instead; useVision off: no vision at all
+  // Without this, "Read is denied" would otherwise look like a bug to the agent instead of a
+  // deliberate setting -- it needs to know up front, not discover it via a denied tool call.
+  const visionNote = !useVision ? ' Vision is OFF: the Read tool is unavailable. Accomplish this using only text (state/extract/find) -- never attempt a screenshot.'
+    : lab && localVision ? ' Local vision is ON: the Read tool is unavailable here, use `labctl vm look`/`locate` for everything visual.' : '';
   const wrapped = sessionId
     ? `Follow-up in the same conversation. ${lab ? tab : `${tab} again (the tab was released between messages)`} and re-read the page before acting.${visionNote} User: ${task}`
     : `${lab ? '' : `Session name: ${SESSION}. `}${tab}.${visionNote} Task: ${task}`;
-  const grantRead = !(lab && localVision); // local vision mode: no Read tool at all, so the agent can't even attempt frontier-model vision
   const tools = ['Bash', ...(grantRead ? ['Read'] : []), ...(search ? ['WebSearch'] : [])].join(',');
   child = spawn('claude', ['-p', wrapped, ...(sessionId ? ['--resume', sessionId] : []),
     '--model', ['sonnet', 'opus'].includes(model) ? model : 'haiku', '--effort', effort,
@@ -168,7 +171,7 @@ function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5
   const me = child;
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
   const send = ev => res.write(`data: ${JSON.stringify(ev)}\n\n`);
-  send({ kind: 'start', text: `${model} · ${effort} effort · search ${search ? 'on' : 'off'}${lab ? ' · lab mode' : ''}${lab && localVision ? ' · local vision' : ''} · $${maxBudgetUsd} cap` });
+  send({ kind: 'start', text: `${model} · ${effort} effort · search ${search ? 'on' : 'off'}${!useVision ? ' · vision off' : ''}${lab ? ' · lab mode' : ''}${lab && localVision ? ' · local vision' : ''} · $${maxBudgetUsd} cap` });
   let buf = '', errBuf = '';
   const st = { labels: {}, q: '' };
   me.stdout.on('data', d => {
@@ -182,6 +185,128 @@ function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5
     if (child === me) child = null;
   });
   res.on('close', () => { if (child === me) me.kill('SIGINT'); }); // panel closed -> stop driving
+}
+
+// Spawns `claude -p`, streams its events through the same reducer startTask uses (so the
+// panel shows live progress for this too, not a silent gap), and resolves with the final
+// answer text + cost once it closes. Used by plan mode for both the restricted planning call
+// and the full-agent fallback call -- startTask itself is left untouched (proven, don't risk
+// it) and does its own independent spawn.
+function spawnClaudeCollect({ wrapped, model, effort, systemPrompt, tools, allowedTools, maxBudgetUsd, sessionId, env, send, st }) {
+  return new Promise(resolve => {
+    const c = spawn('claude', ['-p', wrapped, ...(sessionId ? ['--resume', sessionId] : []),
+      '--model', ['sonnet', 'opus'].includes(model) ? model : 'haiku', '--effort', effort,
+      '--system-prompt', systemPrompt, '--tools', tools,
+      '--allowedTools', ...allowedTools,
+      '--permission-mode', 'dontAsk', '--max-turns', '30', '--max-budget-usd', String(Number(maxBudgetUsd) || 0.15),
+      '--system-prompt-snapshot', 'off',
+      '--output-format', 'stream-json', '--verbose'],
+      { cwd: SANDBOX, env: { ...ENV, ...env, TTW_RUN_ID: randomBytes(6).toString('hex') }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
+    child = c; // single-flight guard (`if (child)` on /task) and /stop apply to this too
+    let buf = '', errBuf = '', finalText = '', newSessionId = sessionId, resultMsg = null;
+    c.stdout.on('data', d => {
+      buf += d; const lines = buf.split('\n'); buf = lines.pop();
+      for (const l of lines) {
+        try {
+          const msg = JSON.parse(l);
+          if (msg.type === 'system' && msg.subtype === 'init') newSessionId = msg.session_id;
+          if (msg.type === 'assistant') for (const part of msg.message?.content ?? []) if (part.type === 'text' && part.text.trim()) finalText = part.text;
+          if (msg.type === 'result') resultMsg = msg;
+          for (const ev of events(msg, st)) send(ev);
+        } catch {}
+      }
+    });
+    c.stderr.on('data', d => errBuf += d);
+    c.on('close', code => {
+      if (child === c) child = null;
+      resolve({ finalText, sessionId: newSessionId, cost: resultMsg?.total_cost_usd ?? 0, turns: resultMsg?.num_turns ?? 0, isError: !!resultMsg?.is_error, errBuf, code });
+    });
+  });
+}
+
+// Pulls the plan's JSON out of the planner's final answer -- a ```json fence if it used one,
+// otherwise the whole trimmed text.
+function extractPlan(text) {
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  return JSON.parse((fence ? fence[1] : text).trim());
+}
+
+// Plan mode: Claude plans a section once (cheap, restricted to reading), a deterministic
+// script executes it at zero further LLM cost (exec-plan.mjs, local-vision checks only), and
+// only on an actual failure does this fall back to the full, already-proven agentic lab mode
+// -- seeded with exactly what failed, so nothing here can end up *less* reliable than today,
+// only cheaper when the plan holds up.
+async function runPlanTask(res, body) {
+  const { task, model = 'haiku', effort = 'low', maxBudgetUsd = 0.75, sessionId, localVision = false, useVision = true, ollamaUrl, visionModel } = body;
+  const vision = visionCfg({ ollamaUrl, visionModel });
+  const visionEnv = { LABCTL_OLLAMA_URL: vision.url, LABCTL_VISION_MODEL: vision.model };
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+  const send = ev => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+  res.on('close', () => child?.kill('SIGINT')); // panel closed -> stop driving, whichever phase is active
+  const st = { labels: {}, q: '' };
+  send({ kind: 'start', text: `${model} · ${effort} effort · plan mode${!useVision ? ' · vision off' : ''}${localVision ? ' · local vision' : ''} · $${maxBudgetUsd} cap` });
+
+  let planRun; // assigned below; `fallback` is only ever called after that assignment runs
+  async function fallback(failure) {
+    const note = failure
+      ? ` A scripted plan was tried and failed at step ${failure.failedStep} (${JSON.stringify(failure.step)}): ${failure.actual ? `expected "${failure.step?.expect}" for "${failure.step?.question}", got "${failure.actual}"` : failure.error}. Diagnose and fix this specific issue, then continue.`
+      : '';
+    const wrapped = `Sessions "instructions" and "vm" are already bound.${note} Task: ${task}`;
+    const grantRead = useVision && !localVision;
+    const tools = ['Bash', ...(grantRead ? ['Read'] : [])].join(',');
+    const fb = await spawnClaudeCollect({
+      wrapped, model, effort, systemPrompt: PROMPT_LAB, tools, sessionId,
+      allowedTools: ['Bash(opencli *)', 'Bash(ttw *)', 'Bash(labctl *)', ...(grantRead ? [`Read(/${SHOTS}/**)`] : [])],
+      maxBudgetUsd: Math.max(0.1, (Number(maxBudgetUsd) || 0.75) - planRun.cost), env: visionEnv, send, st,
+    });
+    send({ kind: 'done', text: fb.finalText, cost: planRun.cost + fb.cost, turns: planRun.turns + fb.turns, error: fb.isError, subtype: fb.isError ? 'error' : 'success' });
+    res.end();
+  }
+
+  send({ kind: 'step', text: '📝 Planning this step...' });
+  const planBudget = Math.min(0.15, Number(maxBudgetUsd) || 0.75);
+  planRun = await spawnClaudeCollect({
+    wrapped: `Sessions "instructions" and "vm" are already bound. Plan the next part of this task: ${task}`,
+    model, effort, systemPrompt: PROMPT_PLAN, tools: 'Bash', sessionId,
+    allowedTools: ['Bash(opencli browser instructions *)', 'Bash(labctl vm look *)'],
+    maxBudgetUsd: planBudget, env: visionEnv, send, st,
+  });
+
+  let plan = null;
+  try { plan = extractPlan(planRun.finalText); } catch {}
+  if (!plan || plan.unplannable || !Array.isArray(plan.steps) || !plan.steps.length) {
+    send({ kind: 'step', text: plan?.unplannable ? `⚠ Not plannable: ${plan.reason || 'unclear'} — falling back to the full agent.` : '⚠ Planning didn\'t produce a usable plan — falling back to the full agent.' });
+    return fallback();
+  }
+  send({ kind: 'step', text: `✅ Plan ready (${plan.steps.length} steps): ${plan.goal || ''}` });
+
+  const planPath = join(SANDBOX, `plan-${randomBytes(4).toString('hex')}.json`);
+  writeFileSync(planPath, JSON.stringify(plan));
+  const stepText = s => s.do === 'check' ? `✓ Check: ${s.question}` : s.do === 'type' ? `⌨ Typed: ${s.arg}` :
+    s.do === 'typeHint' ? `⌨ Typed (from hint): ${s.arg}` :
+    s.do === 'key' ? `Pressed ${s.arg}` : s.do === 'locate' ? `👁 Clicked: ${s.arg}` :
+    s.do === 'username' ? 'Typed lab username' : s.do === 'password' ? 'Typed lab password' :
+    s.do === 'click' ? 'Clicked VM screen' : JSON.stringify(s);
+  const execResult = await new Promise(resolveExec => {
+    const c = spawn('node', [join(HERE, 'lab', 'exec-plan.mjs'), 'vm', planPath], { env: { ...ENV, ...visionEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
+    child = c;
+    let buf = '', last = null;
+    c.stdout.on('data', d => {
+      buf += d; const lines = buf.split('\n'); buf = lines.pop();
+      for (const l of lines) {
+        if (!l.trim()) continue;
+        try { const j = JSON.parse(l); j.progress ? send({ kind: 'step', text: j.answer ? `${stepText(j.step)} → ${j.answer}` : stepText(j.step) }) : (last = j); } catch {}
+      }
+    });
+    c.on('close', () => { if (child === c) child = null; resolveExec(last ?? { ok: false, error: 'exec-plan produced no result' }); });
+  });
+
+  if (execResult.ok) {
+    send({ kind: 'done', text: `Plan executed successfully (${execResult.stepsRun} steps, $${planRun.cost.toFixed(3)}). This section's VM actions are done — check the lab's own Verify/Next button yourself, or ask me to continue.`, cost: planRun.cost, turns: planRun.turns, subtype: 'success' });
+    return res.end();
+  }
+  send({ kind: 'step', text: `✗ Plan failed at step ${execResult.failedStep}: ${execResult.actual || execResult.error}. Falling back to the full agent to diagnose and fix.` });
+  return fallback(execResult);
 }
 
 http.createServer(async (req, res) => {
@@ -201,6 +326,13 @@ http.createServer(async (req, res) => {
     if (denied(body.tabUrl)) return json(res, 403, { error: `denylisted site: ${new URL(body.tabUrl).hostname}` });
     if (child) return json(res, 409, { error: 'a task is already running' });
     return startTask(res, body);
+  }
+  if (req.method === 'POST' && path === '/lab/plan') {
+    const body = await readBody(req);
+    if (!body.task?.trim()) return json(res, 400, { error: 'empty task' });
+    if (body.sessionId && !/^[0-9a-f-]{36}$/.test(body.sessionId)) return json(res, 400, { error: 'bad sessionId' });
+    if (child) return json(res, 409, { error: 'a task is already running' });
+    return runPlanTask(res, body);
   }
   if (req.method === 'POST' && path === '/lab/bind') {
     const body = await readBody(req);

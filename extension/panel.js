@@ -9,15 +9,17 @@ const save = () => chrome.storage.local.set({ convos, current });
 const cur = () => convos[current];
 
 // Model / effort / search / budget are saved per conversation; a new one starts with the current values.
-const readSettings = () => ({ model: $('model').value, effort: $('effort').value, search: $('search').checked, lab: $('lab').checked, localVision: $('localVision').checked, budget: $('budget').value });
+const readSettings = () => ({ model: $('model').value, effort: $('effort').value, search: $('search').checked, lab: $('lab').checked, localVision: $('localVision').checked, planMode: $('planMode').checked, useVision: $('useVision').checked, budget: $('budget').value });
 function applySettings(st) {
   if (!st) return;
-  $('model').value = st.model; $('effort').value = st.effort; $('search').checked = !!st.search; $('lab').checked = !!st.lab; $('localVision').checked = !!st.localVision; $('budget').value = st.budget;
+  $('model').value = st.model; $('effort').value = st.effort; $('search').checked = !!st.search; $('lab').checked = !!st.lab; $('localVision').checked = !!st.localVision; $('planMode').checked = !!st.planMode;
+  $('useVision').checked = st.useVision !== false; // defaults ON, unlike the others -- undefined (older saved settings) must stay ON, not OFF
+  $('budget').value = st.budget;
 }
 function saveSettings() {
   if (!cur()) return;
   cur().settings = readSettings();
-  chrome.storage.local.set({ model: $('model').value, budget: $('budget').value, search: $('search').checked, lab: $('lab').checked, localVision: $('localVision').checked }); // defaults for new conversations
+  chrome.storage.local.set({ model: $('model').value, budget: $('budget').value, search: $('search').checked, lab: $('lab').checked, localVision: $('localVision').checked, planMode: $('planMode').checked, useVision: $('useVision').checked }); // defaults for new conversations
   save();
 }
 
@@ -43,13 +45,33 @@ function render(keepScroll = false) {
   for (const id of ['convo', 'new', 'del']) $(id).disabled = running;
 }
 
+// Minimal, safe markdown -> HTML for the message-like log lines (Claude's own answers, not
+// raw command output). Escapes first so nothing in the source text -- including a URL a web
+// search quoted verbatim -- can break out of a tag or attribute; the only real `<`/`>`/`"`
+// in the result come from the fixed replacement strings below, never from the input.
+const escapeHtml = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function mdInline(s) {
+  s = escapeHtml(s);
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'); // [text](http…) only -- javascript: etc. never matches, stays literal text
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  s = s.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
+  return s;
+}
+const mdToHtml = text => text.split('\n').map(line => {
+  const bullet = line.match(/^(\s*)[-*]\s+(.*)$/);
+  return bullet ? `${bullet[1]}• ${mdInline(bullet[2])}` : mdInline(line);
+}).join('\n');
+const MD_CLASSES = new Set(['say', 'result', 'result wait', 'vision', 'q']);
+
 // Follow new lines only while the user is at the bottom; otherwise offer a "↓ Latest" button.
 const atBottom = () => { const l = $('log'); return l.scrollHeight - l.scrollTop - l.clientHeight < 40; };
 const toBottom = () => { $('log').scrollTop = $('log').scrollHeight; $('jump').hidden = true; };
 function addLine(text, cls = '') {
   const follow = atBottom();
   const d = document.createElement('div');
-  d.className = cls; d.textContent = text;
+  d.className = cls;
+  if (MD_CLASSES.has(cls)) d.innerHTML = mdToHtml(text); else d.textContent = text;
   $('log').append(d);
   if (follow) toBottom(); else $('jump').hidden = false;
   return d;
@@ -146,10 +168,11 @@ async function go() {
   log(c, task, 'task');
   $('task').value = '';
   if (tab) await fx(tab.id, true);
+  const planMode = lab && $('planMode').checked;
   try {
-    const r = await fetch(`${RUNNER}/task`, {
+    const r = await fetch(`${RUNNER}${planMode ? '/lab/plan' : '/task'}`, {
       method: 'POST', headers: { ...auth(), 'content-type': 'application/json' },
-      body: JSON.stringify({ task, tabUrl: tab?.url, model: $('model').value, maxBudgetUsd: Number($('budget').value), sessionId: c.sessionId, effort: $('effort').value, search: $('search').checked, lab, localVision: $('localVision').checked, ...visionBody() }),
+      body: JSON.stringify({ task, tabUrl: tab?.url, model: $('model').value, maxBudgetUsd: Number($('budget').value), sessionId: c.sessionId, effort: $('effort').value, search: $('search').checked, lab, localVision: $('localVision').checked, useVision: $('useVision').checked, ...visionBody() }),
     });
     if (!r.ok) throw new Error((await r.json()).error);
     const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -182,13 +205,15 @@ async function stop() {
 
 let effortByModel = {};
 const showEffort = () => { $('effort').value = effortByModel[$('model').value] || 'low'; };
-chrome.storage.local.get(['token', 'model', 'budget', 'convos', 'current', 'search', 'lab', 'localVision', 'effortByModel'], s => {
+chrome.storage.local.get(['token', 'model', 'budget', 'convos', 'current', 'search', 'lab', 'localVision', 'planMode', 'useVision', 'effortByModel'], s => {
   if (s.token) $('token').value = s.token;
   if (s.model) $('model').value = s.model;
   if (s.budget) $('budget').value = s.budget;
   $('search').checked = !!s.search;
   $('lab').checked = !!s.lab;
   $('localVision').checked = !!s.localVision;
+  $('planMode').checked = !!s.planMode;
+  $('useVision').checked = s.useVision !== false; // defaults ON (see applySettings)
   effortByModel = s.effortByModel || {};
   showEffort();
   convos = s.convos ?? {};
@@ -227,8 +252,10 @@ chrome.storage.local.get(['fxCorner', 'details'], s => {
 // Switching model within a conversation picks that model's last effort.
 $('model').onchange = () => { showEffort(); saveSettings(); };
 $('effort').onchange = () => { effortByModel[$('model').value] = $('effort').value; chrome.storage.local.set({ effortByModel }); saveSettings(); };
+$('useVision').onchange = saveSettings;
 $('search').onchange = saveSettings;
 $('lab').onchange = saveSettings;
+$('planMode').onchange = saveSettings;
 $('localVision').onchange = () => {
   saveSettings();
   // Unchecking means "I'm done with this for now" -- free the ~20GB right away. Reloading
