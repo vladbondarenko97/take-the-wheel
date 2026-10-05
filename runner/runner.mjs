@@ -200,6 +200,7 @@ function spawnClaudeCollect({ wrapped, model, effort, systemPrompt, tools, allow
       '--allowedTools', ...allowedTools,
       '--permission-mode', 'dontAsk', '--max-turns', '30', '--max-budget-usd', String(Number(maxBudgetUsd) || 0.15),
       '--system-prompt-snapshot', 'off',
+      '--strict-mcp-config', '--disable-slash-commands', // same as startTask: no MCP connectors/skills in agent runs
       '--output-format', 'stream-json', '--verbose'],
       { cwd: SANDBOX, env: { ...ENV, ...env, TTW_RUN_ID: randomBytes(6).toString('hex') }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
     child = c; // single-flight guard (`if (child)` on /task) and /stop apply to this too
