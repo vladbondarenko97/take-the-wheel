@@ -1,0 +1,14 @@
+data: {"kind":"start","text":"haiku · low effort · search off · vision off · $1 cap"}
+
+data: {"kind":"session","id":"3bf7f69c-75a0-40be-af4c-e011ce384000"}
+
+data: {"kind":"tool","text":"opencli gh api user --jq .login"}
+
+data: {"kind":"out","text":"Blocked by Take the Wheel: not an allowed command: \"opencli gh api user --jq .login\". Allowed: opencli browser task, ttw","error":true}
+
+data: {"kind":"text","text":"I can't run `opencli gh api user --jq .login` in this environment. The sandbox only allows `opencli browser task` and `ttw` commands for browser automation—GitHub CLI commands like `gh api` aren't available.\n\nTo get your GitHub login, I'd need to either:\n1. Use browser automation to log into GitHub and read it from the page, or\n2. Have access to run `gh` directly (which isn't available here)\n\nWhich would you prefer?"}
+
+data: {"kind":"done","text":"I can't run `opencli gh api user --jq .login` in this environment. The sandbox only allows `opencli browser task` and `ttw` commands for browser automation—GitHub CLI commands like `gh api` aren't available.\n\nTo get your GitHub login, I'd need to either:\n1. Use browser automation to log into GitHub and read it from the page, or\n2. Have access to run `gh` directly (which isn't available here)\n\nWhich would you prefer?","cost":0.0102796,"turns":2,"error":false,"subtype":"success"}
+
+data: {"kind":"end","code":0}
+

@@ -1,0 +1,14 @@
+data: {"kind":"start","text":"haiku · low effort · search off · vision off · $1 cap"}
+
+data: {"kind":"session","id":"dfd01c28-5330-48b4-929b-467a914996be"}
+
+data: {"kind":"tool","text":"pwd"}
+
+data: {"kind":"out","text":"Blocked by Take the Wheel: not an allowed command: \"pwd\". Allowed: opencli browser task, ttw","error":true}
+
+data: {"kind":"text","text":"I can't execute `pwd` directly in this environment. This is a Take the Wheel browser automation session, which restricts commands to only:\n- `opencli browser task …` (browser control)\n- `ttw …` (form/quiz helpers)\n\nThe primary working directory is documented as `/Users/d34db33f/.take-the-wheel/sandbox` in the system context, but I'm not able to run arbitrary shell commands here. If you need to run shell commands, you'll need to open a regular terminal session outside of the browser automation context."}
+
+data: {"kind":"done","text":"I can't execute `pwd` directly in this environment. This is a Take the Wheel browser automation session, which restricts commands to only:\n- `opencli browser task …` (browser control)\n- `ttw …` (form/quiz helpers)\n\nThe primary working directory is documented as `/Users/d34db33f/.take-the-wheel/sandbox` in the system context, but I'm not able to run arbitrary shell commands here. If you need to run shell commands, you'll need to open a regular terminal session outside of the browser automation context.","cost":0.0245965,"turns":2,"error":false,"subtype":"success"}
+
+data: {"kind":"end","code":0}
+

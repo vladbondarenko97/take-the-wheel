@@ -1,0 +1,21 @@
+name: guard tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Syntax check
+        run: for f in setup.mjs runner/*.mjs runner/bin/* test/*.mjs extension/*.js; do node --check "$f" || exit 1; done
+      - name: Guard regression tests
+        run: node --test test/guard.test.mjs

@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, delimiter } from 'node:path';
+import { guardArgs, deniedHost } from './guard.mjs';
 
 const HERE = import.meta.dirname, PORT = 19826, SESSION = 'task';
 // Optional per-machine settings, one KEY=VALUE per line (e.g. LABCTL_OLLAMA_URL for Ollama on another machine).
@@ -43,12 +44,13 @@ const ENV = { ...process.env, PATH: `${join(HERE, 'bin')}${delimiter}${process.e
 // When the runner is started from inside a Claude Code session, don't let the agent inherit that session
 // (remote-control bridge, messaging socket, session ids): it attaches the child to it and bloats every run.
 for (const k of Object.keys(ENV)) if (k === 'CLAUDECODE' || k === 'CLAUDE_PID' || k === 'CLAUDE_EFFORT' || k.startsWith('CLAUDE_CODE_')) delete ENV[k];
+const guard = allowed => guardArgs(allowed, { shots: SHOTS, denySites: DENY }); // guard.mjs explains why --allowedTools alone isn't enough
 let child = null;
 
 const WIN = process.platform === 'win32'; // npm global installs are .cmd shims on Windows; spawn/execFile need shell:true to resolve them
 const run = (cmd, args) => new Promise(r => execFile(cmd, args, { timeout: 20000, shell: WIN }, (e, out, err) => r(String(out || '') + String(err || ''))));
 const unbind = () => run('opencli', ['browser', SESSION, 'unbind']);
-const denied = url => { try { const h = new URL(url).hostname; return DENY.some(d => h === d || h.endsWith('.' + d)); } catch { return false; } };
+const denied = url => deniedHost(url, DENY);
 const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 const clip = (s, n = 300) => (s = String(s ?? '')).length > n ? s.slice(0, n) + '…' : s;
 const readBody = req => new Promise(r => { let b = ''; req.on('data', c => b += c); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch { r({}); } }); });
@@ -127,7 +129,8 @@ function* events(msg, st) {
     // output) so it's visible without digging.
     if (!c.is_error && /^labctl \S+ (look|locate)\b/.test(st.lastCmd || '')) { yield { kind: 'vision', text: clip(t, 400) }; continue; }
     // Errors are always visible in the panel, so send just the reason line, not a whole page digest.
-    const lines = t.split('\n').map(l => l.trim()).filter(l => l && !/^Exit code \d+$/.test(l));
+    // guard.mjs denials arrive as "PreToolUse:Bash hook error: [<hook command>]: <reason>"; keep just the reason.
+    const lines = t.replace(/^PreToolUse:\w+ hook error: \[.*?\]: /, '').split('\n').map(l => l.trim()).filter(l => l && !/^Exit code \d+$/.test(l));
     const reason = lines.find(l => /^(refused|unknown id|WARNING|The browser stopped|no ADVANCE|usage:)|failed:/.test(l)) || lines[0];
     yield { kind: 'out', text: c.is_error ? clip(reason, 200) : clip(t), error: !!c.is_error };
   }
@@ -158,16 +161,16 @@ function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5
     ? `Follow-up in the same conversation. ${lab ? tab : `${tab} again (the tab was released between messages)`} and re-read the page before acting.${visionNote} User: ${task}`
     : `${lab ? '' : `Session name: ${SESSION}. `}${tab}.${visionNote} Task: ${task}`;
   const tools = ['Bash', ...(grantRead ? ['Read'] : []), ...(search ? ['WebSearch'] : [])].join(',');
+  const g = guard(['Bash(opencli browser task *)', 'Bash(ttw *)', ...(lab ? ['Bash(opencli browser instructions *)', 'Bash(opencli browser vm *)', 'Bash(labctl *)'] : []), ...(grantRead ? [`Read(/${SHOTS}/**)`] : []), ...(search ? ['WebSearch'] : [])]);
   child = spawn('claude', ['-p', wrapped, ...(sessionId ? ['--resume', sessionId] : []),
     '--model', ['sonnet', 'opus'].includes(model) ? model : 'haiku', '--effort', effort,
     '--system-prompt', lab ? PROMPT_LAB : PROMPT, '--tools', tools,
-    '--allowedTools', 'Bash(opencli *)', 'Bash(ttw *)', ...(lab ? ['Bash(labctl *)'] : []), ...(grantRead ? [`Read(/${SHOTS}/**)`] : []), ...(search ? ['WebSearch'] : []),
-    '--disallowedTools', 'Bash(opencli browser task screenshot *)', // screenshots only via `ttw look`, into SHOTS (lab mode uses labctl's own screenshot path instead)
+    ...g.args,
     '--permission-mode', 'dontAsk', '--max-turns', '60', '--max-budget-usd', String(Number(maxBudgetUsd) || 0.5),
     '--system-prompt-snapshot', 'off', // follow-ups use the current prompt, not the one recorded when the conversation began
     '--strict-mcp-config', '--disable-slash-commands', // no MCP connectors or skills: the agent uses neither, and they cost tokens every turn
     '--output-format', 'stream-json', '--verbose'],
-    { cwd: SANDBOX, env: { ...ENV, TTW_RUN_ID: randomBytes(6).toString('hex'), TTW_ALLOW_FINISH: allowFinish ? '1' : '0', LABCTL_OLLAMA_URL: vision.url, LABCTL_VISION_MODEL: vision.model }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
+    { cwd: SANDBOX, env: { ...ENV, ...g.env, TTW_RUN_ID: randomBytes(6).toString('hex'), TTW_ALLOW_FINISH: allowFinish ? '1' : '0', LABCTL_OLLAMA_URL: vision.url, LABCTL_VISION_MODEL: vision.model }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
   const me = child;
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
   const send = ev => res.write(`data: ${JSON.stringify(ev)}\n\n`);
@@ -193,16 +196,17 @@ function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5
 // and the full-agent fallback call -- startTask itself is left untouched (proven, don't risk
 // it) and does its own independent spawn.
 function spawnClaudeCollect({ wrapped, model, effort, systemPrompt, tools, allowedTools, maxBudgetUsd, sessionId, env, send, st }) {
+  const g = guard(allowedTools);
   return new Promise(resolve => {
     const c = spawn('claude', ['-p', wrapped, ...(sessionId ? ['--resume', sessionId] : []),
       '--model', ['sonnet', 'opus'].includes(model) ? model : 'haiku', '--effort', effort,
       '--system-prompt', systemPrompt, '--tools', tools,
-      '--allowedTools', ...allowedTools,
+      ...g.args,
       '--permission-mode', 'dontAsk', '--max-turns', '30', '--max-budget-usd', String(Number(maxBudgetUsd) || 0.15),
       '--system-prompt-snapshot', 'off',
       '--strict-mcp-config', '--disable-slash-commands', // same as startTask: no MCP connectors/skills in agent runs
       '--output-format', 'stream-json', '--verbose'],
-      { cwd: SANDBOX, env: { ...ENV, ...env, TTW_RUN_ID: randomBytes(6).toString('hex') }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
+      { cwd: SANDBOX, env: { ...ENV, ...env, ...g.env, TTW_RUN_ID: randomBytes(6).toString('hex') }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
     child = c; // single-flight guard (`if (child)` on /task) and /stop apply to this too
     let buf = '', errBuf = '', finalText = '', newSessionId = sessionId, resultMsg = null;
     c.stdout.on('data', d => {
@@ -257,7 +261,7 @@ async function runPlanTask(res, body) {
     const tools = ['Bash', ...(grantRead ? ['Read'] : [])].join(',');
     const fb = await spawnClaudeCollect({
       wrapped, model, effort, systemPrompt: PROMPT_LAB, tools, sessionId,
-      allowedTools: ['Bash(opencli *)', 'Bash(ttw *)', 'Bash(labctl *)', ...(grantRead ? [`Read(/${SHOTS}/**)`] : [])],
+      allowedTools: ['Bash(opencli browser task *)', 'Bash(opencli browser instructions *)', 'Bash(opencli browser vm *)', 'Bash(ttw *)', 'Bash(labctl *)', ...(grantRead ? [`Read(/${SHOTS}/**)`] : [])],
       maxBudgetUsd: Math.max(0.1, (Number(maxBudgetUsd) || 0.75) - planRun.cost), env: visionEnv, send, st,
     });
     send({ kind: 'done', text: fb.finalText, cost: planRun.cost + fb.cost, turns: planRun.turns + fb.turns, error: fb.isError, subtype: fb.isError ? 'error' : 'success' });

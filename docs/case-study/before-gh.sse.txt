@@ -1,0 +1,14 @@
+data: {"kind":"start","text":"haiku · low effort · search off · vision off · $1 cap"}
+
+data: {"kind":"session","id":"39004238-7122-45af-8e79-2c37f9edb147"}
+
+data: {"kind":"tool","text":"opencli gh api user --jq .login"}
+
+data: {"kind":"out","text":"vladbondarenko97","error":false}
+
+data: {"kind":"text","text":"The result is: **vladbondarenko97**"}
+
+data: {"kind":"done","text":"The result is: **vladbondarenko97**","cost":0.010405000000000001,"turns":2,"error":false,"subtype":"success"}
+
+data: {"kind":"end","code":0}
+

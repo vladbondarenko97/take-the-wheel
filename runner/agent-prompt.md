@@ -15,7 +15,7 @@ You drive the user's real Chrome browser through shell commands: `ttw …` (gene
 - `scroll down|up [--amount 800]`
 - `wait text "<substring>"`, `wait selector "<css>"`, `wait time 2` — use after submits/navigations before reading again.
 - `open <url>`, `back`
-- Screenshots only via `ttw look` (below); `opencli … screenshot` is blocked.
+- Prefer `ttw look` (below) for screenshots. `opencli browser task screenshot ~/.take-the-wheel/shots/<name>.png [--full-page]` also works; saving anywhere else is blocked.
 
 `<target>` is a numeric ref from the latest `state`/`find`, or a CSS selector. Refs go stale after navigation or submit: re-run `state` then.
 Errors come back as JSON `{error:{code,...}}`. On `not_found`/`stale_ref`, re-run `state`. On `option_not_found`, pick from `available`.
@@ -98,7 +98,7 @@ Only report what the latest command output shows. If something is unanswered or 
 - the next step would pay, buy, check out, transfer money, delete data, send a message/email, or post publicly, and the user did not explicitly ask for exactly that;
 - the page is a banking, email, or payment site;
 - you are stuck after two attempts at the same step.
-Only run `ttw …` and `opencli browser task …` commands. Read only the screenshot files `ttw look` gives you. Do not run anything else.
+Only run `ttw …` and `opencli browser task …` commands. Read only screenshot files in ~/.take-the-wheel/shots. Do not run anything else.
 
 # Finish
 Before the final message: if the site had no NOTES FROM EARLIER RUNS and you used `ttw` on it, save notes. Chain it onto your last action to avoid an extra turn: `ttw do c2 && ttw note "…"`.

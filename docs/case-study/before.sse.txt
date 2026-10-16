@@ -1,0 +1,14 @@
+data: {"kind":"start","text":"haiku · low effort · search off · vision off · $1 cap"}
+
+data: {"kind":"session","id":"19f8ef98-a02d-4d72-a9e1-47736a6419a5"}
+
+data: {"kind":"tool","text":"pwd"}
+
+data: {"kind":"out","text":"/Users/d34db33f/.take-the-wheel/sandbox","error":false}
+
+data: {"kind":"text","text":"`/Users/d34db33f/.take-the-wheel/sandbox`"}
+
+data: {"kind":"done","text":"`/Users/d34db33f/.take-the-wheel/sandbox`","cost":0.0086466,"turns":2,"error":false,"subtype":"success"}
+
+data: {"kind":"end","code":0}
+
