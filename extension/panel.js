@@ -90,7 +90,7 @@ async function health() {
     $('dot').className = r.ok && h.ok ? 'ok' : 'bad';
     $('dot').title = r.ok ? `${h.claude}\n${h.opencli}` : h.error;
     if (h.vision) { $('ollamaUrl').placeholder = h.vision.url + ' (default)'; $('visionModel').placeholder = h.vision.model + ' (default)'; }
-  } catch { $('dot').className = 'bad'; $('dot').title = 'runner not reachable: run `node runner/runner.mjs`'; }
+  } catch { $('dot').className = 'bad'; $('dot').title = 'runner not reachable: run `node setup.mjs` once (autostart), or `node runner/runner.mjs`'; }
 }
 
 const show = {

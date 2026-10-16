@@ -8,7 +8,7 @@ import { join } from 'node:path';
 
 const HERE = import.meta.dirname;
 const RUNNER = join(HERE, 'runner', 'runner.mjs');
-const NODE = process.execPath;
+const NODE = process.execPath; // Windows only; the macOS LaunchAgent resolves `node` via PATH so `brew upgrade node` can't break it
 const WIN = platform() === 'win32';
 const STATE_DIR = join(homedir(), '.take-the-wheel');
 mkdirSync(STATE_DIR, { recursive: true });
@@ -55,7 +55,8 @@ function installAutostartDarwin() {
   <key>Label</key><string>${label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${NODE}</string>
+    <string>/usr/bin/env</string>
+    <string>node</string>
     <string>${RUNNER}</string>
   </array>
   <key>WorkingDirectory</key><string>${HERE}</string>
