@@ -20,24 +20,22 @@ Take the Wheel is a Chrome side panel that turns plain-English requests into rea
 
 ## Why it matters
 
-| | |
-|---|---|
-| 💸 **Cents per task** | Prompt and tool design took a 25-question quiz from **$0.33 and 29 turns to $0.034 and 4 turns** on Haiku, while accuracy went from 23/25 (it claimed 25) to 25/25. |
-| 🛡️ **A security boundary that doesn't depend on the model** | Every command the agent runs passes through [`runner/guard.mjs`](runner/guard.mjs), a deterministic policy check. Tested with Haiku, Sonnet and Opus, enforced in CI. [Read the case study ↓](#-case-study-the-allowlist-that-wasnt) |
-| 🤝 **Human in the loop by design** | It stops on logins, CAPTCHAs, payments and "pause here" requests with a **Waiting for you** card, then resumes in the same conversation with full memory. It never types passwords, 2FA codes or card numbers. |
-| 🧠 **Pick the model per task** | Haiku for routine work, Sonnet or Opus when the answer needs judgment, such as spotting a mislabeled eBay listing. Runs on your Claude Code plan, not an API key, with a per-run budget cap. |
-| 👀 **Visible while it works** | The driven tab gets a rainbow aura, a "driving" pill, and a card for every click and keystroke. Those are page-only effects, with zero model cost. |
+- 💸 **Cents per task**: Prompt and tool design took a 25-question quiz from **$0.33 and 29 turns to $0.034 and 4 turns** on Haiku, while accuracy went from 23/25 (it claimed 25) to 25/25.
+- 🛡️ **A security boundary that doesn't depend on the model**: Every command the agent runs passes through [`runner/guard.mjs`](runner/guard.mjs), a deterministic policy check. Tested with Haiku, Sonnet and Opus, enforced in CI. [Read the case study ↓](#-case-study-the-allowlist-that-wasnt)
+- 🤝 **Human in the loop by design**: It stops on logins, CAPTCHAs, payments and "pause here" requests with a **Waiting for you** card, then resumes in the same conversation with full memory. It never types passwords, 2FA codes or card numbers.
+- 🧠 **Pick the model per task**: Haiku for routine work, Sonnet or Opus when the answer needs judgment, such as spotting a mislabeled eBay listing. Runs on your Claude Code plan, not an API key, with a per-run budget cap.
+- 👀 **Visible while it works**: The driven tab gets a rainbow aura, a "driving" pill, and a card for every click and keystroke. Those are page-only effects, with zero model cost.
 
 ## How it works
 
 ```mermaid
-flowchart LR
-  P["Side panel<br/>(Chrome extension)"] -- "task, SSE stream" --> R["runner.mjs<br/>127.0.0.1 + token"]
-  R -- spawns --> C["claude -p<br/>Haiku / Sonnet / Opus"]
-  C -- "every Bash / Read call" --> G{"guard.mjs<br/>PreToolUse hook"}
-  G -- "allowed" --> O["opencli browser task …<br/>ttw …"]
-  G -. "blocked" .-> C
-  O --> D["OpenCLI daemon"] --> X["Your Chrome tab<br/>(trusted CDP input)"]
+flowchart TB
+  P["🧭 Side panel<br/>you type a task"] -->|"task · live progress"| R["⚙️ runner.mjs<br/>local only · token · budget cap"]
+  R -->|spawns| C["🤖 claude -p<br/>Haiku · Sonnet · Opus"]
+  C -->|"every Bash / Read call"| G{"🛡️ guard.mjs<br/>PreToolUse hook"}
+  G -->|allowed| O["opencli browser task …<br/>ttw …"]
+  G -.->|blocked, with the reason| C
+  O -->|"trusted CDP clicks & keys"| X["🌐 Your logged-in Chrome tab"]
 ```
 
 1. You type a task in the side panel. The local **runner** starts `claude -p` with a purpose-built system prompt, Bash as its only tool, a turn limit and a dollar cap.
