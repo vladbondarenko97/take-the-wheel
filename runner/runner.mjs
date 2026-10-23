@@ -6,6 +6,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, delimiter } from 'node:path';
 import { guardArgs, deniedHost } from './guard.mjs';
+import { tap, stats, emit } from './telemetry.mjs';
+import { APPROVED, region, check as bedrockCheck } from './bedrock.mjs';
 
 const HERE = import.meta.dirname, PORT = 19826, SESSION = 'task';
 // Optional per-machine settings, one KEY=VALUE per line (e.g. LABCTL_OLLAMA_URL for Ollama on another machine).
@@ -45,6 +47,11 @@ const ENV = { ...process.env, PATH: `${join(HERE, 'bin')}${delimiter}${process.e
 // (remote-control bridge, messaging socket, session ids): it attaches the child to it and bloats every run.
 for (const k of Object.keys(ENV)) if (k === 'CLAUDECODE' || k === 'CLAUDE_PID' || k === 'CLAUDE_EFFORT' || k.startsWith('CLAUDE_CODE_')) delete ENV[k];
 const guard = allowed => guardArgs(allowed, { shots: SHOTS, denySites: DENY }); // guard.mjs explains why --allowedTools alone isn't enough
+// Which backend the agent's claude runs on: the user's Claude Code login, or Amazon Bedrock with an approved model.
+const modelFor = (provider, model) => {
+  const alias = ['sonnet', 'opus'].includes(model) ? model : 'haiku';
+  return provider === 'bedrock' ? { model: APPROVED[alias], env: { CLAUDE_CODE_USE_BEDROCK: '1', AWS_REGION: region() } } : { model: alias, env: {} };
+};
 let child = null;
 
 const WIN = process.platform === 'win32'; // npm global installs are .cmd shims on Windows; spawn/execFile need shell:true to resolve them
@@ -136,16 +143,18 @@ function* events(msg, st) {
   }
   if (msg.type === 'result') {
     const limit = /hit your .*limit/i.test(msg.result ?? ''); // plan usage limit comes back as a "successful" result
-    yield { kind: 'done', text: msg.result, cost: msg.total_cost_usd, turns: msg.num_turns, error: msg.is_error || limit, subtype: limit ? 'usage limit' : msg.subtype };
+    yield { kind: 'done', text: msg.result, cost: msg.total_cost_usd, turns: msg.num_turns, error: msg.is_error || limit, subtype: limit ? 'usage limit' : msg.subtype, usage: msg.usage, apiMs: msg.duration_api_ms };
   }
 }
 
-function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5, sessionId, effort = 'low', search = false, lab = false, localVision = false, useVision = true, ollamaUrl, visionModel }) {
+function startTask(res, { task, tabUrl = '', provider = 'claude', model = 'haiku', maxBudgetUsd = 0.5, sessionId, effort = 'low', search = false, lab = false, localVision = false, useVision = true, ollamaUrl, visionModel }) {
   const vision = visionCfg({ ollamaUrl, visionModel });
   if (!['low', 'medium', 'high'].includes(effort)) effort = 'low';
   // Submitting is only unlocked by the user's own words.
   const allowFinish = /\b(submit|finish|turn (it )?in|hand (it )?in)\b/i.test(task) && !/\b(don'?t|do not|never|without|not)\b[^.]{0,25}\b(submit|finish)/i.test(task);
+  if (provider === 'bedrock') search = false; // WebSearch isn't available on Bedrock
   if (search) task = `SEARCH MODE is on. ${task}`;
+  const m = modelFor(provider, model);
   // Lab mode: the panel already bound `instructions` and `vm` to their tabs (focus-switch +
   // bind has to happen from the extension, which is the only side with chrome.tabs/windows
   // access) before this request was sent, so the agent must not bind/unbind either itself.
@@ -163,18 +172,18 @@ function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5
   const tools = ['Bash', ...(grantRead ? ['Read'] : []), ...(search ? ['WebSearch'] : [])].join(',');
   const g = guard(['Bash(opencli browser task *)', 'Bash(ttw *)', ...(lab ? ['Bash(opencli browser instructions *)', 'Bash(opencli browser vm *)', 'Bash(labctl *)'] : []), ...(grantRead ? [`Read(/${SHOTS}/**)`] : []), ...(search ? ['WebSearch'] : [])]);
   child = spawn('claude', ['-p', wrapped, ...(sessionId ? ['--resume', sessionId] : []),
-    '--model', ['sonnet', 'opus'].includes(model) ? model : 'haiku', '--effort', effort,
+    '--model', m.model, '--effort', effort,
     '--system-prompt', lab ? PROMPT_LAB : PROMPT, '--tools', tools,
     ...g.args,
     '--permission-mode', 'dontAsk', '--max-turns', '60', '--max-budget-usd', String(Number(maxBudgetUsd) || 0.5),
     '--system-prompt-snapshot', 'off', // follow-ups use the current prompt, not the one recorded when the conversation began
     '--strict-mcp-config', '--disable-slash-commands', // no MCP connectors or skills: the agent uses neither, and they cost tokens every turn
     '--output-format', 'stream-json', '--verbose'],
-    { cwd: SANDBOX, env: { ...ENV, ...g.env, TTW_RUN_ID: randomBytes(6).toString('hex'), TTW_ALLOW_FINISH: allowFinish ? '1' : '0', LABCTL_OLLAMA_URL: vision.url, LABCTL_VISION_MODEL: vision.model }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
+    { cwd: SANDBOX, env: { ...ENV, ...m.env, ...g.env, TTW_RUN_ID: randomBytes(6).toString('hex'), TTW_ALLOW_FINISH: allowFinish ? '1' : '0', LABCTL_OLLAMA_URL: vision.url, LABCTL_VISION_MODEL: vision.model }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
   const me = child;
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-  const send = ev => res.write(`data: ${JSON.stringify(ev)}\n\n`);
-  send({ kind: 'start', text: `${model} · ${effort} effort · search ${search ? 'on' : 'off'}${!useVision ? ' · vision off' : ''}${lab ? ' · lab mode' : ''}${lab && localVision ? ' · local vision' : ''} · $${maxBudgetUsd} cap` });
+  const send = tap({ mode: lab ? 'lab' : 'task', provider, model: m.model, effort, resume: !!sessionId }, ev => res.write(`data: ${JSON.stringify(ev)}\n\n`));
+  send({ kind: 'start', text: `${model}${provider === 'bedrock' ? ' (Bedrock)' : ''} · ${effort} effort · search ${search ? 'on' : 'off'}${!useVision ? ' · vision off' : ''}${lab ? ' · lab mode' : ''}${lab && localVision ? ' · local vision' : ''} · $${maxBudgetUsd} cap` });
   let buf = '', errBuf = '';
   const st = { labels: {}, q: '' };
   me.stdout.on('data', d => {
@@ -195,18 +204,18 @@ function startTask(res, { task, tabUrl = '', model = 'haiku', maxBudgetUsd = 0.5
 // answer text + cost once it closes. Used by plan mode for both the restricted planning call
 // and the full-agent fallback call -- startTask itself is left untouched (proven, don't risk
 // it) and does its own independent spawn.
-function spawnClaudeCollect({ wrapped, model, effort, systemPrompt, tools, allowedTools, maxBudgetUsd, sessionId, env, send, st }) {
-  const g = guard(allowedTools);
+function spawnClaudeCollect({ wrapped, provider, model, effort, systemPrompt, tools, allowedTools, maxBudgetUsd, sessionId, env, send, st }) {
+  const g = guard(allowedTools), m = modelFor(provider, model);
   return new Promise(resolve => {
     const c = spawn('claude', ['-p', wrapped, ...(sessionId ? ['--resume', sessionId] : []),
-      '--model', ['sonnet', 'opus'].includes(model) ? model : 'haiku', '--effort', effort,
+      '--model', m.model, '--effort', effort,
       '--system-prompt', systemPrompt, '--tools', tools,
       ...g.args,
       '--permission-mode', 'dontAsk', '--max-turns', '30', '--max-budget-usd', String(Number(maxBudgetUsd) || 0.15),
       '--system-prompt-snapshot', 'off',
       '--strict-mcp-config', '--disable-slash-commands', // same as startTask: no MCP connectors/skills in agent runs
       '--output-format', 'stream-json', '--verbose'],
-      { cwd: SANDBOX, env: { ...ENV, ...env, ...g.env, TTW_RUN_ID: randomBytes(6).toString('hex') }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
+      { cwd: SANDBOX, env: { ...ENV, ...env, ...m.env, ...g.env, TTW_RUN_ID: randomBytes(6).toString('hex') }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
     child = c; // single-flight guard (`if (child)` on /task) and /stop apply to this too
     let buf = '', errBuf = '', finalText = '', newSessionId = sessionId, resultMsg = null;
     c.stdout.on('data', d => {
@@ -242,11 +251,11 @@ function extractPlan(text) {
 // -- seeded with exactly what failed, so nothing here can end up *less* reliable than today,
 // only cheaper when the plan holds up.
 async function runPlanTask(res, body) {
-  const { task, model = 'haiku', effort = 'low', maxBudgetUsd = 0.75, sessionId, localVision = false, useVision = true, ollamaUrl, visionModel } = body;
+  const { task, provider = 'claude', model = 'haiku', effort = 'low', maxBudgetUsd = 0.75, sessionId, localVision = false, useVision = true, ollamaUrl, visionModel } = body;
   const vision = visionCfg({ ollamaUrl, visionModel });
   const visionEnv = { LABCTL_OLLAMA_URL: vision.url, LABCTL_VISION_MODEL: vision.model };
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-  const send = ev => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+  const send = tap({ mode: 'plan', provider, model: modelFor(provider, model).model, effort, resume: !!sessionId }, ev => res.write(`data: ${JSON.stringify(ev)}\n\n`));
   res.on('close', () => child?.kill('SIGINT')); // panel closed -> stop driving, whichever phase is active
   const st = { labels: {}, q: '' };
   send({ kind: 'start', text: `${model} · ${effort} effort · plan mode${!useVision ? ' · vision off' : ''}${localVision ? ' · local vision' : ''} · $${maxBudgetUsd} cap` });
@@ -260,7 +269,7 @@ async function runPlanTask(res, body) {
     const grantRead = useVision && !localVision;
     const tools = ['Bash', ...(grantRead ? ['Read'] : [])].join(',');
     const fb = await spawnClaudeCollect({
-      wrapped, model, effort, systemPrompt: PROMPT_LAB, tools, sessionId,
+      wrapped, provider, model, effort, systemPrompt: PROMPT_LAB, tools, sessionId,
       allowedTools: ['Bash(opencli browser task *)', 'Bash(opencli browser instructions *)', 'Bash(opencli browser vm *)', 'Bash(ttw *)', 'Bash(labctl *)', ...(grantRead ? [`Read(/${SHOTS}/**)`] : [])],
       maxBudgetUsd: Math.max(0.1, (Number(maxBudgetUsd) || 0.75) - planRun.cost), env: visionEnv, send, st,
     });
@@ -272,7 +281,7 @@ async function runPlanTask(res, body) {
   const planBudget = Math.min(0.15, Number(maxBudgetUsd) || 0.75);
   planRun = await spawnClaudeCollect({
     wrapped: `Sessions "instructions" and "vm" are already bound. Plan the next part of this task: ${task}`,
-    model, effort, systemPrompt: PROMPT_PLAN, tools: 'Bash', sessionId,
+    provider, model, effort, systemPrompt: PROMPT_PLAN, tools: 'Bash', sessionId,
     allowedTools: ['Bash(opencli browser instructions *)', 'Bash(labctl vm look *)'],
     maxBudgetUsd: planBudget, env: visionEnv, send, st,
   });
@@ -366,6 +375,12 @@ http.createServer(async (req, res) => {
       return json(res, 200, { reachable: true, base, model: v.model, hasModel: names.includes(v.model), models: names.length });
     } catch (e) { return json(res, 200, { reachable: false, base, model: v.model, error: String(e.message || e).slice(0, 120) }); }
   }
+  if (req.method === 'POST' && path === '/bedrock/check') {
+    const r = await bedrockCheck((await readBody(req)).model);
+    emit('check', { k: 'bedrock_check', ...r });
+    return json(res, 200, r);
+  }
+  if (req.method === 'GET' && path === '/stats') return json(res, 200, await stats(new URL(req.url, 'http://x').searchParams.get('session')));
   if (req.method === 'POST' && path === '/stop') {
     if (child) child.kill('SIGINT');
     await unbind();

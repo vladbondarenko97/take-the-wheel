@@ -42,6 +42,7 @@ function render(keepScroll = false) {
   if (!cur().log.length) addLine('Type a task below. Follow-ups in this conversation keep its memory.', 'empty');
   if (stay) { $('log').scrollTop = top; $('jump').hidden = false; } else toBottom();
   $('go').textContent = cur().sessionId ? 'Continue' : 'Go';
+  if (!$('stats').hidden) loadStats(); // after a run finishes or the conversation changes
   for (const id of ['convo', 'new', 'del']) $(id).disabled = running;
 }
 
@@ -172,7 +173,7 @@ async function go() {
   try {
     const r = await fetch(`${RUNNER}${planMode ? '/lab/plan' : '/task'}`, {
       method: 'POST', headers: { ...auth(), 'content-type': 'application/json' },
-      body: JSON.stringify({ task, tabUrl: tab?.url, model: $('model').value, maxBudgetUsd: Number($('budget').value), sessionId: c.sessionId, effort: $('effort').value, search: $('search').checked, lab, localVision: $('localVision').checked, useVision: $('useVision').checked, ...visionBody() }),
+      body: JSON.stringify({ task, tabUrl: tab?.url, provider: $('provider').value, model: $('model').value, maxBudgetUsd: Number($('budget').value), sessionId: c.sessionId, effort: $('effort').value, search: $('search').checked, lab, localVision: $('localVision').checked, useVision: $('useVision').checked, ...visionBody() }),
     });
     if (!r.ok) throw new Error((await r.json()).error);
     const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -232,7 +233,33 @@ $('del').onclick = () => {
 };
 chrome.runtime.connect({ name: 'panel' }); // background turns effects off if the panel closes mid-run
 chrome.runtime.onMessage.addListener(m => { if (m === 'ttw:stop' && running) stop(); }); // × on the page's driving pill
-$('gear').onclick = () => { $('settings').hidden = $('visionSettings').hidden = !$('settings').hidden; };
+async function loadStats() {
+  try {
+    const s = await (await fetch(`${RUNNER}/stats?session=${cur().sessionId ?? ''}`, { headers: auth() })).json();
+    const $$ = (id, v) => { $(id).textContent = v; };
+    const usd = v => v == null ? '–' : `$${v.toFixed(v < 1 ? 3 : 2)}`;
+    $$('sSuccess', s.successRate == null ? '–' : `${(s.successRate * 100).toFixed(1)}%`);
+    $$('sLatency', s.medianToolMs == null ? '–' : s.medianToolMs < 1000 ? `${s.medianToolMs} ms` : `${(s.medianToolMs / 1000).toFixed(1)} s`);
+    $$('sAvg', usd(s.avgTaskCost)); $$('sBlocked', s.blocked); $$('sConvo', usd(s.conversationCost)); $$('sLifetime', usd(s.lifetimeCost));
+    $$('sNote', `${s.tasks} task${s.tasks === 1 ? '' : 's'} · ${s.toolCalls} tool call${s.toolCalls === 1 ? '' : 's'} · Claude Code's cost estimates, counted against your plan`);
+  } catch { $('sNote').textContent = 'runner not reachable'; }
+}
+$('statsBtn').onclick = () => { $('stats').hidden = !$('stats').hidden; if (!$('stats').hidden) loadStats(); };
+$('gear').onclick = () => { $('settings').hidden = $('visionSettings').hidden = $('providerSettings').hidden = !$('settings').hidden; };
+const applyProvider = () => { const b = $('provider').value === 'bedrock'; $('search').disabled = b; if (b) $('search').checked = false; }; // no WebSearch on Bedrock
+chrome.storage.local.get('provider', s => { $('provider').value = s.provider || 'claude'; applyProvider(); });
+$('provider').onchange = () => { chrome.storage.local.set({ provider: $('provider').value }); applyProvider(); };
+$('bedrockTest').onclick = async () => {
+  const out = $('bedrockResult'); out.className = ''; out.textContent = 'testing…'; $('bedrockTest').disabled = true;
+  try {
+    const r = await (await fetch(`${RUNNER}/bedrock/check`, { method: 'POST', headers: { ...auth(), 'content-type': 'application/json' }, body: JSON.stringify({ model: $('model').value }) })).json();
+    out.className = r.ok ? 'ok' : 'bad';
+    out.textContent = r.ok ? `✓ ${r.question} = ${r.answer} · ${r.latencyMs} ms · ${r.inputTokens}+${r.outputTokens} tokens${r.attempts > 1 ? ` · ${r.attempts} attempts (${r.throttled} throttled)` : ''}`
+      : `✗ ${r.error || `expected ${r.expected}, got "${r.answer}"`}`;
+    out.title = JSON.stringify(r, null, 1);
+  } catch { out.className = 'bad'; out.textContent = '✗ runner not reachable'; }
+  $('bedrockTest').disabled = false;
+};
 // Local vision server/model: global settings (not per conversation); empty = the runner's defaults.
 const visionBody = () => ({ ollamaUrl: $('ollamaUrl').value.trim(), visionModel: $('visionModel').value.trim() });
 chrome.storage.local.get(['ollamaUrl', 'visionModel'], s => { $('ollamaUrl').value = s.ollamaUrl || ''; $('visionModel').value = s.visionModel || ''; });

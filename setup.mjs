@@ -25,6 +25,12 @@ function checkNode() {
   ok(`Node ${process.versions.node}`);
 }
 
+function installDeps() {
+  step('Optional dependencies (AWS Bedrock SDK)');
+  const r = spawnSync('npm', ['install', '--no-audit', '--no-fund'], { cwd: HERE, stdio: 'inherit', shell: WIN });
+  if (r.status === 0) ok('installed'); else warn('npm install failed: Bedrock mode needs it, the Claude Code login mode does not');
+}
+
 function ensureOpencli() {
   step('opencli');
   const probe = sh('opencli', ['--version']);
@@ -125,6 +131,7 @@ function installAutostart() {
 }
 
 checkNode();
+installDeps();
 ensureOpencli();
 runDoctor();
 installAutostart();

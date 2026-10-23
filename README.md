@@ -10,7 +10,7 @@
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Haiku_%C2%B7_Sonnet_%C2%B7_Opus-D97757)
 ![Chrome MV3](https://img.shields.io/badge/Chrome-MV3_side_panel-4285F4)
 ![Node](https://img.shields.io/badge/node-%E2%89%A520-339933)
-![Dependencies](https://img.shields.io/badge/runtime_deps-0-brightgreen)
+![AWS Bedrock](https://img.shields.io/badge/AWS-Bedrock-FF9900)
 
 <img src="docs/img/driving.png" alt="A page being driven: rainbow aura, a card for each action, and a 'Take the Wheel is driving' pill" width="820">
 
@@ -23,7 +23,8 @@ Take the Wheel is a Chrome side panel that turns plain-English requests into rea
 - 💸 **Cents per task**: Prompt and tool design took a 25-question quiz from **$0.33 and 29 turns to $0.034 and 4 turns** on Haiku, while accuracy went from 23/25 (it claimed 25) to 25/25.
 - 🛡️ **A security boundary that doesn't depend on the model**: Every command the agent runs passes through [`runner/guard.mjs`](runner/guard.mjs), a deterministic policy check. Tested with Haiku, Sonnet and Opus, enforced in CI. [Read the case study ↓](#-case-study-the-allowlist-that-wasnt)
 - 🤝 **Human in the loop by design**: It stops on logins, CAPTCHAs, payments and "pause here" requests with a **Waiting for you** card, then resumes in the same conversation with full memory. It never types passwords, 2FA codes or card numbers.
-- 🧠 **Pick the model per task**: Haiku for routine work, Sonnet or Opus when the answer needs judgment, such as spotting a mislabeled eBay listing. Runs on your Claude Code plan, not an API key, with a per-run budget cap.
+- 🧠 **Pick the model per task**: Haiku for routine work, Sonnet or Opus when the answer needs judgment, such as spotting a mislabeled eBay listing. A per-run budget cap applies either way.
+- ☁️ **Your Claude login or Amazon Bedrock**: Run the agent on a personal Claude Code plan, or switch it to Bedrock with an approved model allowlist, so the work runs under the company's AWS account and billing. A built-in check verifies the connection end to end.
 - 👀 **Visible while it works**: The driven tab gets a rainbow aura, a "driving" pill, and a card for every click and keystroke. Those are page-only effects, with zero model cost.
 
 ## How it works
@@ -117,7 +118,7 @@ All figures are Claude Code's per-run cost estimates, from runs on 2026-09-30.
 1. `npm i -g @jackwener/opencli`
 2. Install the **OpenCLI** extension from the [Chrome Web Store](https://chromewebstore.google.com/detail/opencli/ildkmabpimmkaediidaifkhjpohdnifk). `opencli doctor` should show no `[MISSING]` or `[FAIL]` lines.
 3. `chrome://extensions` → Developer mode → **Load unpacked** → select `extension/`.
-4. `node setup.mjs`. It installs the runner as a login item (macOS LaunchAgent or Windows scheduled task) that restarts if it crashes and logs to `~/.take-the-wheel/runner.log`. On other systems, run `node runner/runner.mjs` yourself.
+4. `node setup.mjs`. It installs the optional AWS Bedrock SDK, then installs the runner as a login item (macOS LaunchAgent or Windows scheduled task) that restarts if it crashes and logs to `~/.take-the-wheel/runner.log`. On other systems, run `node runner/runner.mjs` yourself.
 5. Paste the token from `runner/.token` into the side panel. The dot turns green when the runner, OpenCLI and Claude are all OK.
 
 ## Using it
@@ -165,10 +166,35 @@ Keep it off graded coursework and exams: they usually prohibit AI help.
 </details>
 
 <details>
+<summary><b>Amazon Bedrock</b></summary>
+
+Settings (⚙) → **Model provider** switches the agent between your Claude Code login and Amazon Bedrock.
+
+- **Approved models only.** Haiku, Sonnet and Opus map to an allowlist of Bedrock inference profiles in [`runner/bedrock.mjs`](runner/bedrock.mjs). Override them with `TTW_BEDROCK_HAIKU`, `TTW_BEDROCK_SONNET` and `TTW_BEDROCK_OPUS`, in the environment or in `~/.take-the-wheel/env`. Agent runs set `CLAUDE_CODE_USE_BEDROCK=1` and pass the approved ID as `--model`. Anything else is refused.
+- **Credentials.** The standard AWS chain: `aws login`, SSO, a profile, environment keys, or an Amazon Bedrock API key in `AWS_BEARER_TOKEN_BEDROCK`. The region comes from `AWS_REGION` (default `us-east-1`).
+- **Test Bedrock.** This invokes the selected approved model once through the official [`@anthropic-ai/bedrock-sdk`](https://www.npmjs.com/package/@anthropic-ai/bedrock-sdk) with a fresh arithmetic question, then checks the answer. It reports latency, input and output tokens, attempts, and throttling, and writes the result to the audit log as `bedrock_check`. Throttling (429), server errors and dropped connections are retried with exponential backoff, full jitter and `retry-after`; other errors fail immediately. The same check is available as `POST /bedrock/check`.
+- **Search** is turned off on Bedrock, where Claude Code's web search isn't available.
+- **Costs** shown for agent runs are Claude Code's estimates at Anthropic list prices; Bedrock bills at AWS's rates. Token counts are exact either way.
+- **IAM.** The identity needs `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` on the inference profiles. See [Claude Code on Amazon Bedrock](https://code.claude.com/docs/en/amazon-bedrock#iam-configuration).
+
+</details>
+
+<details>
+<summary><b>Analytics, audit log and monitoring</b></summary>
+
+The 📊 button in the panel shows success rate, median tool latency, average cost per task, blocked tool calls, and the cost of the current conversation and of all time.
+
+- **Audit log.** Every run appends compact events to `~/.take-the-wheel/events.jsonl`: start (mode, model), session, each command, whether it failed or was blocked, and the result with its cost. Page text is never recorded.
+- **Monitoring.** Set `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` (and `OTEL_EXPORTER_OTLP_HEADERS` if needed), in the environment or in `~/.take-the-wheel/env`, and the same events go to any OpenTelemetry collector as OTLP logs. From there they can feed Grafana, Datadog, Splunk and the like for dashboards and alerts; for example, alert when `ttw.out` events with `ttw.blocked=true` spike. Set `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (or `OTEL_EXPORTER_OTLP_ENDPOINT`, which gets `/v1/traces` appended) and each task also becomes one trace span with the GenAI attributes (`gen_ai.request.model`, `gen_ai.usage.input_tokens` / `output_tokens`), cost, turns, every command as a span event, and `ttw.blocked`, the number of calls the guard refused.
+- **Stats.** `GET /stats?session=<id>` (bearer token required) is what the panel reads.
+
+</details>
+
+<details>
 <summary><b>Tests</b></summary>
 
 ```bash
-node --test test/guard.test.mjs   # guard regression suite (also runs in CI on every push)
+node --test test/*.test.mjs       # guard, telemetry and Bedrock suites (also run in CI on every push)
 node test/guard-e2e.mjs           # live, through the runner, across models; ~$0.30, uses your active tab
 python3 -m http.server 8000       # then open test/fx-demo.html (effects) or test/quiz.html (sample quiz)
 ```

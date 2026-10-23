@@ -17,5 +17,5 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: Syntax check
         run: for f in setup.mjs runner/*.mjs runner/bin/* test/*.mjs extension/*.js; do node --check "$f" || exit 1; done
-      - name: Guard regression tests
-        run: node --test test/guard.test.mjs
+      - name: Guard and telemetry tests
+        run: node --test test/*.test.mjs

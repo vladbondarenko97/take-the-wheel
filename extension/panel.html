@@ -49,12 +49,20 @@
   button:hover { border-color: color-mix(in srgb, var(--text-dim) 50%, var(--border)); }
   button:active { transform: scale(.97); }
   button:disabled { opacity: .5; cursor: default; transform: none; }
-  #gear { font-size: 14px; line-height: 1; padding: 6px 9px; }
+  #gear, #statsBtn { font-size: 14px; line-height: 1; padding: 6px 9px; }
+  #stats { padding: 10px; background: var(--bg-alt); }
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .tile { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 9px 11px; box-shadow: var(--shadow); }
+  .tile b { display: block; font-size: 20px; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .tile span { font-size: 11.5px; color: var(--text-dim); }
+  .stats-note { font-size: 11.5px; color: var(--text-dim); padding-top: 8px; }
   #go { flex: 1; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
   #go:hover { background: color-mix(in srgb, var(--accent) 88%, black); border-color: color-mix(in srgb, var(--accent) 88%, black); }
   #stop { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, var(--border)); background: var(--danger-tint); }
 
-  .row.settings-panel { background: var(--bg-alt); border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--text-dim); }
+  .row.settings-panel { background: var(--bg-alt); border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--text-dim); flex-wrap: wrap; }
+  #bedrockResult.ok { color: var(--ok); } #bedrockResult.bad { color: var(--danger); }
+  .toggles label:has(input:disabled) { opacity: .45; cursor: default; }
 
   #jump { position: fixed; right: 16px; bottom: 120px; border: 0; border-radius: 999px; padding: 7px 13px; background: var(--text);
     color: var(--bg); font: 600 12px system-ui, sans-serif; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
@@ -113,6 +121,7 @@
   <span class="name">Take the Wheel</span>
   <span class="spacer"></span>
   <span id="dot" title="runner health"></span>
+  <button id="statsBtn" title="analytics">📊</button>
   <button id="gear" title="settings">⚙</button>
 </div>
 <div class="row top">
@@ -126,12 +135,32 @@
   </select>
   <label><input id="details" type="checkbox"> Show command details</label>
 </div>
+<div class="row top settings-panel" id="providerSettings" hidden>
+  Model provider:
+  <select id="provider" title="Where the agent's Claude runs">
+    <option value="claude">Claude Code login</option>
+    <option value="bedrock">AWS Bedrock</option>
+  </select>
+  <button id="bedrockTest" title="Invoke the approved model on Bedrock once and verify the answer">Test Bedrock</button>
+  <span id="bedrockResult"></span>
+</div>
 <div class="row top settings-panel" id="visionSettings" hidden>
   Local vision server:
   <input id="ollamaUrl" style="flex: 2; min-width: 0" title="Ollama address, e.g. http://my-mac-mini:11434 or a Tailscale IP (empty = runner default)">
   <input id="visionModel" style="flex: 1; min-width: 0" title="Ollama vision model (empty = runner default)">
   <button id="visionTest">Test</button>
   <span id="visionResult"></span>
+</div>
+<div class="top" id="stats" hidden>
+  <div class="tiles">
+    <div class="tile" title="Runs that finished without an error, budget or turn limit, or Stop. It does not judge whether the answer was right."><b id="sSuccess">–</b><span>Task success rate</span></div>
+    <div class="tile"><b id="sLatency">–</b><span>Median tool latency</span></div>
+    <div class="tile"><b id="sAvg">–</b><span>Avg cost per task</span></div>
+    <div class="tile"><b id="sBlocked">–</b><span>Blocked tool calls</span></div>
+    <div class="tile"><b id="sConvo">–</b><span>This conversation</span></div>
+    <div class="tile"><b id="sLifetime">–</b><span>Lifetime cost</span></div>
+  </div>
+  <div class="stats-note" id="sNote"></div>
 </div>
 <div class="row top">
   <select id="convo" title="conversations"></select>
