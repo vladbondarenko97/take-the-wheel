@@ -146,8 +146,8 @@
 </div>
 <div class="row top settings-panel" id="visionSettings" hidden>
   Local vision server:
-  <input id="ollamaUrl" style="flex: 2; min-width: 0" title="Ollama address, e.g. http://my-mac-mini:11434 or a Tailscale IP (empty = runner default)">
-  <input id="visionModel" style="flex: 1; min-width: 0" title="Ollama vision model (empty = runner default)">
+  <input id="visionUrl" style="flex: 2; min-width: 0" title="oMLX address, e.g. http://my-mac-mini:8000/v1 or a Tailscale IP (empty = runner default)">
+  <input id="visionModel" style="flex: 1; min-width: 0" title="oMLX vision model (empty = runner default)">
   <button id="visionTest">Test</button>
   <span id="visionResult"></span>
 </div>
@@ -179,7 +179,7 @@
       <label title="On: can take screenshots (ttw look / Read) when text alone isn't enough, e.g. a question about an image. Off: text only (state/extract/find) -- no screenshots at all, so it can't fall back to reading prices/listings visually instead of as text."><input id="useVision" type="checkbox" checked> Use vision</label>
       <label title="One web search per question it is unsure about"><input id="search" type="checkbox"> Search</label>
       <label title="Drive a canvas-based VM lab console across two tabs: the lab's instructions tab and the VM console's own 'Open in New Window' popout. Open both before pressing Go."><input id="lab" type="checkbox"> Lab mode</label>
-      <label title="Lab mode only: every VM screenshot/verification goes through your local Ollama vision model instead of Claude's own (much pricier) vision. The Read tool is unavailable in this mode, so it can't fall back."><input id="localVision" type="checkbox"> Local vision</label>
+      <label title="Lab mode only: every VM screenshot/verification goes through your local oMLX vision model instead of Claude's own (much pricier) vision. The Read tool is unavailable in this mode, so it can't fall back."><input id="localVision" type="checkbox"> Local vision</label>
       <label title="Lab mode only: Claude plans a section once (cheap), then a deterministic script executes it at zero further LLM cost, checking its own work with local vision. Falls back to the normal full agent automatically if a check fails."><input id="planMode" type="checkbox"> Plan mode</label>
     </div>
   </div>

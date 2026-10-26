@@ -10,7 +10,7 @@ import { tap, stats, emit } from './telemetry.mjs';
 import { APPROVED, region, check as bedrockCheck } from './bedrock.mjs';
 
 const HERE = import.meta.dirname, PORT = 19826, SESSION = 'task';
-// Optional per-machine settings, one KEY=VALUE per line (e.g. LABCTL_OLLAMA_URL for Ollama on another machine).
+// Optional per-machine settings, one KEY=VALUE per line (e.g. LABCTL_VISION_URL for oMLX on another machine).
 // Real environment variables win. The agent's tools (labctl) inherit these through ENV below.
 const ENV_FILE = join(homedir(), '.take-the-wheel', 'env');
 if (existsSync(ENV_FILE)) for (const l of readFileSync(ENV_FILE, 'utf8').split('\n')) {
@@ -25,18 +25,23 @@ const PROMPT_LAB = readFileSync(join(HERE, 'lab-agent-prompt.md'), 'utf8');
 const PROMPT_PLAN = readFileSync(join(HERE, 'lab-plan-prompt.md'), 'utf8');
 const LAB_SESSIONS = ['instructions', 'vm'];
 const DENY = JSON.parse(readFileSync(join(HERE, 'denylist.json'), 'utf8'));
-const VISION_MODEL = process.env.LABCTL_VISION_MODEL ?? 'qwen3-vl:30b-a3b'; // keep in sync with labctl.mjs's own default
-const OLLAMA_URL = process.env.LABCTL_OLLAMA_URL ?? 'http://localhost:11434/api/generate'; // same default as labctl.mjs
+const VISION_MODEL = process.env.LABCTL_VISION_MODEL ?? 'Qwen3.5-9B-MLX-8bit'; // keep in sync with labctl.mjs's own default
+const VISION_URL = process.env.LABCTL_VISION_URL ?? 'http://localhost:8000/v1'; // same default as labctl.mjs
+// oMLX requires an API key; default to the local oMLX install's own key so it works with no setup.
+let VISION_KEY = process.env.LABCTL_VISION_KEY ?? '';
+if (!VISION_KEY) try { VISION_KEY = JSON.parse(readFileSync(join(homedir(), '.omlx', 'settings.json'), 'utf8')).auth?.api_key ?? ''; } catch {}
 // The panel's settings can override the vision server/model per request; empty means the defaults above.
-// Accepts "host:port", "http://host:port" or a full ".../api/generate" URL.
+// Accepts "host:port", "http://host:port" or a full ".../v1" URL.
 function visionCfg(body = {}) {
-  let url = String(body.ollamaUrl || '').trim().replace(/\/+$/, '');
+  let url = String(body.visionUrl || '').trim().replace(/\/+$/, '').replace(/\/chat\/completions$/, '');
   if (url && !/^https?:\/\//i.test(url)) url = 'http://' + url;
   if (url) { try { new URL(url); } catch { url = ''; } }
-  if (url && !/\/api\/generate$/.test(url)) url += '/api/generate';
+  if (url && !/\/v1$/.test(url)) url += '/v1';
   const model = String(body.visionModel || '').trim();
-  return { url: url || OLLAMA_URL, model: /^[\w.:\/-]{1,100}$/.test(model) ? model : VISION_MODEL };
+  return { url: url || VISION_URL, model: /^[\w.:\/-]{1,100}$/.test(model) ? model : VISION_MODEL };
 }
+const visionEnvFor = v => ({ LABCTL_VISION_URL: v.url, LABCTL_VISION_MODEL: v.model, LABCTL_VISION_KEY: VISION_KEY });
+const visionHeaders = { 'content-type': 'application/json', ...(VISION_KEY ? { authorization: `Bearer ${VISION_KEY}` } : {}) };
 // Empty cwd: no stray CLAUDE.md / .mcp.json / hooks. Fixed path, because claude --resume looks sessions up by cwd.
 const SANDBOX = join(homedir(), '.take-the-wheel', 'sandbox');
 mkdirSync(SANDBOX, { recursive: true });
@@ -147,8 +152,8 @@ function* events(msg, st) {
   }
 }
 
-function startTask(res, { task, tabUrl = '', provider = 'claude', model = 'haiku', maxBudgetUsd = 0.5, sessionId, effort = 'low', search = false, lab = false, localVision = false, useVision = true, ollamaUrl, visionModel }) {
-  const vision = visionCfg({ ollamaUrl, visionModel });
+function startTask(res, { task, tabUrl = '', provider = 'claude', model = 'haiku', maxBudgetUsd = 0.5, sessionId, effort = 'low', search = false, lab = false, localVision = false, useVision = true, visionUrl, visionModel }) {
+  const vision = visionCfg({ visionUrl, visionModel });
   if (!['low', 'medium', 'high'].includes(effort)) effort = 'low';
   // Submitting is only unlocked by the user's own words.
   const allowFinish = /\b(submit|finish|turn (it )?in|hand (it )?in)\b/i.test(task) && !/\b(don'?t|do not|never|without|not)\b[^.]{0,25}\b(submit|finish)/i.test(task);
@@ -179,7 +184,7 @@ function startTask(res, { task, tabUrl = '', provider = 'claude', model = 'haiku
     '--system-prompt-snapshot', 'off', // follow-ups use the current prompt, not the one recorded when the conversation began
     '--strict-mcp-config', '--disable-slash-commands', // no MCP connectors or skills: the agent uses neither, and they cost tokens every turn
     '--output-format', 'stream-json', '--verbose'],
-    { cwd: SANDBOX, env: { ...ENV, ...m.env, ...g.env, TTW_RUN_ID: randomBytes(6).toString('hex'), TTW_ALLOW_FINISH: allowFinish ? '1' : '0', LABCTL_OLLAMA_URL: vision.url, LABCTL_VISION_MODEL: vision.model }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
+    { cwd: SANDBOX, env: { ...ENV, ...m.env, ...g.env, TTW_RUN_ID: randomBytes(6).toString('hex'), TTW_ALLOW_FINISH: allowFinish ? '1' : '0', ...visionEnvFor(vision) }, stdio: ['ignore', 'pipe', 'pipe'], shell: WIN });
   const me = child;
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
   const send = tap({ mode: lab ? 'lab' : 'task', provider, model: m.model, effort, resume: !!sessionId }, ev => res.write(`data: ${JSON.stringify(ev)}\n\n`));
@@ -251,9 +256,9 @@ function extractPlan(text) {
 // -- seeded with exactly what failed, so nothing here can end up *less* reliable than today,
 // only cheaper when the plan holds up.
 async function runPlanTask(res, body) {
-  const { task, provider = 'claude', model = 'haiku', effort = 'low', maxBudgetUsd = 0.75, sessionId, localVision = false, useVision = true, ollamaUrl, visionModel } = body;
-  const vision = visionCfg({ ollamaUrl, visionModel });
-  const visionEnv = { LABCTL_OLLAMA_URL: vision.url, LABCTL_VISION_MODEL: vision.model };
+  const { task, provider = 'claude', model = 'haiku', effort = 'low', maxBudgetUsd = 0.75, sessionId, localVision = false, useVision = true, visionUrl, visionModel } = body;
+  const vision = visionCfg({ visionUrl, visionModel });
+  const visionEnv = { ...visionEnvFor(vision) };
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
   const send = tap({ mode: 'plan', provider, model: modelFor(provider, model).model, effort, resume: !!sessionId }, ev => res.write(`data: ${JSON.stringify(ev)}\n\n`));
   res.on('close', () => child?.kill('SIGINT')); // panel closed -> stop driving, whichever phase is active
@@ -331,7 +336,7 @@ http.createServer(async (req, res) => {
   if (req.method === 'GET' && path === '/health') {
     const [doc, ver] = await Promise.all([run('opencli', ['doctor']), run('claude', ['--version'])]);
     return json(res, 200, { ok: !/\[(MISSING|FAIL)\]/.test(doc) && /\d/.test(ver), opencli: doc.trim(), claude: ver.trim(), busy: !!child,
-      vision: { url: OLLAMA_URL.replace(/\/api\/generate$/, ''), model: VISION_MODEL } }); // defaults shown as placeholders in the panel
+      vision: { url: VISION_URL, model: VISION_MODEL } }); // defaults shown as placeholders in the panel
   }
   if (req.method === 'POST' && path === '/task') {
     const body = await readBody(req);
@@ -357,21 +362,21 @@ http.createServer(async (req, res) => {
     try { return json(res, 200, JSON.parse(out)); } catch { return json(res, 502, { error: out.trim() }); }
   }
   if (req.method === 'POST' && path === '/lab/vision/unload') {
-    // ~2s to reload later (measured: load_duration on this machine), so there's no real cost
-    // to freeing the ~20GB immediately when the user unchecks Local vision.
-    // Over HTTP (keep_alive: 0 unloads the model), so it also works when Ollama runs on another machine.
+    // Reloading takes a few seconds, so free the model's memory as soon as the user unchecks Local vision.
+    // Over HTTP (oMLX's unload endpoint), so it also works when oMLX runs on another machine.
     const v = visionCfg(await readBody(req));
-    const out = await fetch(v.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: v.model, keep_alive: 0 }) })
+    const out = await fetch(`${v.url}/models/${encodeURIComponent(v.model)}/unload`, { method: 'POST', headers: visionHeaders })
       .then(r => r.text()).catch(e => String(e));
     return json(res, 200, { unloaded: true, out: out.trim().slice(0, 200) });
   }
   if (req.method === 'POST' && path === '/lab/vision/test') {
     // Settings "Test" button: is the server reachable, and does it have the model?
     const v = visionCfg(await readBody(req));
-    const base = v.url.replace(/\/api\/generate$/, '');
+    const base = v.url;
     try {
-      const r = await fetch(base + '/api/tags', { signal: AbortSignal.timeout(6000) });
-      const names = (await r.json()).models?.map(m => m.name) ?? [];
+      const r = await fetch(base + '/models', { headers: visionHeaders, signal: AbortSignal.timeout(6000) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}${r.status === 401 ? ' (set LABCTL_VISION_KEY)' : ''}`);
+      const names = (await r.json()).data?.map(m => m.id) ?? [];
       return json(res, 200, { reachable: true, base, model: v.model, hasModel: names.includes(v.model), models: names.length });
     } catch (e) { return json(res, 200, { reachable: false, base, model: v.model, error: String(e.message || e).slice(0, 120) }); }
   }

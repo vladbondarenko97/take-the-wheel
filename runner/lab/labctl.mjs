@@ -19,7 +19,7 @@
 //   - typing arbitrary text: opencli's own `keys` command does NOT reach the VM (tested:
 //     real DOM focus forced onto the canvas, still nothing reaches it). The Virtual
 //     Keyboard's per-key buttons are the platform's actual supported input channel.
-//   - `locate` and `look`: point a local vision model (Ollama) at a screenshot instead of
+//   - `locate` and `look`: point a local vision model (oMLX, OpenAI-compatible) at a screenshot instead of
 //     eyeballing pixel coordinates by hand, or asking a frontier model's Read tool to look.
 //
 // Usage:
@@ -112,8 +112,9 @@ function clickNative(vx, vy) {
   })()`]);
 }
 
-const OLLAMA_URL = process.env.LABCTL_OLLAMA_URL ?? 'http://localhost:11434/api/generate';
-const OLLAMA_MODEL = process.env.LABCTL_VISION_MODEL ?? 'qwen3-vl:30b-a3b';
+const VISION_URL = process.env.LABCTL_VISION_URL ?? 'http://localhost:8000/v1';
+const VISION_MODEL = process.env.LABCTL_VISION_MODEL ?? 'Qwen3.5-9B-MLX-8bit';
+const VISION_KEY = process.env.LABCTL_VISION_KEY ?? '';
 
 function screenshotBase64() {
   const shotPath = join(tmpdir(), `labctl-${Date.now()}.png`);
@@ -124,13 +125,18 @@ function screenshotBase64() {
 }
 
 async function askVision(prompt, image, { json = false, think = false } = {}) {
-  const res = await fetch(OLLAMA_URL, {
+  const res = await fetch(VISION_URL + '/chat/completions', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ model: OLLAMA_MODEL, prompt, images: [image], stream: false, think, ...(json ? { format: 'json' } : {}) }),
+    headers: { 'content-type': 'application/json', ...(VISION_KEY ? { authorization: `Bearer ${VISION_KEY}` } : {}) },
+    body: JSON.stringify({
+      model: VISION_MODEL, stream: false,
+      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: `data:image/png;base64,${image}` } }] }],
+      chat_template_kwargs: { enable_thinking: think },
+      ...(json ? { response_format: { type: 'json_object' } } : {}),
+    }),
   });
-  if (!res.ok) throw new Error(`ollama request failed: ${res.status} ${await res.text()}`);
-  return (await res.json()).response;
+  if (!res.ok) throw new Error(`vision request failed: ${res.status} ${await res.text()}`);
+  return (await res.json()).choices[0].message.content;
 }
 
 async function locate(description) {

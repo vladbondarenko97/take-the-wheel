@@ -90,7 +90,7 @@ async function health() {
     const h = await r.json();
     $('dot').className = r.ok && h.ok ? 'ok' : 'bad';
     $('dot').title = r.ok ? `${h.claude}\n${h.opencli}` : h.error;
-    if (h.vision) { $('ollamaUrl').placeholder = h.vision.url + ' (default)'; $('visionModel').placeholder = h.vision.model + ' (default)'; }
+    if (h.vision) { $('visionUrl').placeholder = h.vision.url + ' (default)'; $('visionModel').placeholder = h.vision.model + ' (default)'; }
   } catch { $('dot').className = 'bad'; $('dot').title = 'runner not reachable: run `node setup.mjs` once (autostart), or `node runner/runner.mjs`'; }
 }
 
@@ -261,9 +261,9 @@ $('bedrockTest').onclick = async () => {
   $('bedrockTest').disabled = false;
 };
 // Local vision server/model: global settings (not per conversation); empty = the runner's defaults.
-const visionBody = () => ({ ollamaUrl: $('ollamaUrl').value.trim(), visionModel: $('visionModel').value.trim() });
-chrome.storage.local.get(['ollamaUrl', 'visionModel'], s => { $('ollamaUrl').value = s.ollamaUrl || ''; $('visionModel').value = s.visionModel || ''; });
-for (const id of ['ollamaUrl', 'visionModel']) $(id).onchange = () => chrome.storage.local.set({ [id]: $(id).value.trim() });
+const visionBody = () => ({ visionUrl: $('visionUrl').value.trim(), visionModel: $('visionModel').value.trim() });
+chrome.storage.local.get(['visionUrl', 'visionModel'], s => { $('visionUrl').value = s.visionUrl || ''; $('visionModel').value = s.visionModel || ''; });
+for (const id of ['visionUrl', 'visionModel']) $(id).onchange = () => chrome.storage.local.set({ [id]: $(id).value.trim() });
 $('visionTest').onclick = async () => {
   $('visionResult').textContent = '…';
   try {
