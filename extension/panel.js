@@ -1,7 +1,7 @@
 const RUNNER = 'http://127.0.0.1:19826';
 const $ = id => document.getElementById(id);
 const auth = () => ({ authorization: `Bearer ${$('token').value.trim()}` });
-let running = false, stopping = false, runLocal = false; // stopping: Stop was pressed this run; runLocal: it runs on the local model (free)
+let running = false, stopping = false; // stopping: Stop was pressed during this run
 
 // Conversations: each keeps its claude session id, so follow-ups resume with full memory instead of re-exploring.
 let convos = {}, current = null;
@@ -114,9 +114,9 @@ const show = {
     if (e.text) log(c, e.text, cls);
     // claude reports cost cumulatively over a resumed session; show this run's share and the conversation total.
     const total = e.cost ?? 0, prev = c.cost ?? 0, run = total >= prev ? total - prev : total;
-    if (!runLocal) c.cost = total;
-    // A local model costs nothing (claude's estimate is a made-up API price), and Stop isn't a failure.
-    const price = runLocal ? 'free (local model)' : `$${run.toFixed(3)} est.` + (prev ? ` (conversation $${total.toFixed(3)})` : '');
+    c.cost = total;
+    // On the local model this is still claude's API-equivalent estimate: what the run would have cost on Claude.
+    const price = `$${run.toFixed(3)} est.` + (prev ? ` (conversation $${total.toFixed(3)})` : '');
     if (stopping) log(c, `■ stopped by request — ${price}, ${e.turns} turns`, 'step');
     else log(c, `${e.error ? '✗' : '✓'} ${e.subtype === 'success' ? 'done' : e.subtype} — ${price}, ${e.turns} turns`, e.error ? 'err' : 'done');
     if (c.id === current) render(true);
@@ -167,7 +167,7 @@ async function go() {
     [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab) await chrome.tabs.update(tab.id, { active: true }); // opencli binds the active tab
   }
-  running = true; stopping = false; runLocal = $('model').value === 'local'; $('go').disabled = true; render();
+  running = true; stopping = false; $('go').disabled = true; render();
   if (!c.sessionId) c.title = task.slice(0, 60);
   c.updated = Date.now();
   log(c, task, 'task');
