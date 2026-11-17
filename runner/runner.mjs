@@ -57,7 +57,10 @@ const guard = (allowed, ttwActs) => guardArgs(allowed, { shots: SHOTS, denySites
 const modelFor = (provider, model, vision = visionCfg()) => {
   if (model === 'local') return { model: vision.model, local: true, env: {
     ANTHROPIC_BASE_URL: vision.url.replace(/\/v1$/, ''), ANTHROPIC_AUTH_TOKEN: VISION_KEY || 'none', ANTHROPIC_API_KEY: '',
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', API_TIMEOUT_MS: '600000' } };
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', API_TIMEOUT_MS: '600000',
+    // No thinking: the chat template drops old thinking from the history, so it never matches oMLX's prefix
+    // cache and every turn re-read the whole conversation (23 s -> 130 s per step on a quiz). Off, the cache grows each turn.
+    MAX_THINKING_TOKENS: '0' } };
   const alias = ['sonnet', 'opus'].includes(model) ? model : 'haiku';
   return provider === 'bedrock' ? { model: APPROVED[alias], env: { CLAUDE_CODE_USE_BEDROCK: '1', AWS_REGION: region() } } : { model: alias, env: {} };
 };

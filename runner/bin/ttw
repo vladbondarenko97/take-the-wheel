@@ -84,7 +84,11 @@ async function waitForChange(oldFp) {
 }
 
 const run = async () => {
-  if (cmd === 'page') return console.log(digest().text);
+  if (cmd === 'page') {
+    // `ttw do … && ttw page` (small models do this) would print the same digest twice in one result.
+    const shown = state().shown, d = digest();
+    return console.log(shown?.ppid === process.ppid && shown.fp === d.fp ? 'Same page as printed above (nothing changed since).' : d.text);
+  }
 
   if (cmd === 'do') {
     // --finish (submit / advance past the last question) only works when the user's own task asked to submit.
@@ -127,6 +131,7 @@ const run = async () => {
     }
     const out = advanced ? await waitForChange(s.fp) : digest();
     if (advanced) { const s2 = state(); s2.advancePpid = process.ppid; saveState(s2); }
+    const s3 = state(); s3.shown = { ppid: process.ppid, fp: out.fp }; saveState(s3);
     return console.log(out.text);
   }
 
@@ -136,7 +141,8 @@ const run = async () => {
     guard();
     try { oc(it.kind === 'select' ? 'select' : 'fill', it.sel, rest.join(' ')); }
     catch (e) { die(`fill failed: ${String(e.stdout || e.message).slice(0, 400)}`); }
-    return console.log(digest().text);
+    const d = digest(), s3 = state(); s3.shown = { ppid: process.ppid, fp: d.fp }; saveState(s3);
+    return console.log(d.text);
   }
 
   if (cmd === 'look') {
