@@ -83,6 +83,28 @@ function installAutostartDarwin() {
   if (load.status !== 0) { warn(`launchctl load failed: ${load.stderr}`); return; }
   ok(`LaunchAgent installed (${plistPath})`);
   ok(`runner starts at login, restarts if it crashes, logs to ${logPath}`);
+  installDeployDarwin();
+}
+
+// Auto-update: every minute, scripts/mac-cd.sh fast-forwards to origin/main once its CI passed and restarts the runner.
+function installDeployDarwin() {
+  const label = 'com.takethewheel.deploy';
+  const plistPath = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
+  const logPath = join(STATE_DIR, 'deploy.log');
+  writeFileSync(plistPath, `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key><array><string>/bin/bash</string><string>${join(HERE, 'scripts', 'mac-cd.sh')}</string></array>
+  <key>StartInterval</key><integer>60</integer>
+  <key>StandardOutPath</key><string>${logPath}</string>
+  <key>StandardErrorPath</key><string>${logPath}</string>
+</dict></plist>
+`);
+  spawnSync('launchctl', ['unload', plistPath]);
+  const load = spawnSync('launchctl', ['load', '-w', plistPath]);
+  if (load.status !== 0) return warn(`launchctl load failed for the auto-update job: ${load.stderr}`);
+  ok(`auto-update installed: pulls main every minute once CI passes, logs to ${logPath}`);
 }
 
 function installAutostartWindows() {

@@ -52,7 +52,9 @@ if (!session || !cmd) {
   process.exit(1);
 }
 
-const oc = args => execFileSync('opencli', ['browser', session, ...args], { encoding: 'utf8' });
+const oc = args => execFileSync('opencli', ['browser', '--session', session, ...args], { encoding: 'utf8' });
+// opencli 2.x wraps eval output as {"ok":true,"data":…}; 1.x printed the bare value.
+const evalJs = js => { const out = oc(['eval', js]).trim(); try { const o = JSON.parse(out); return o?.ok === true && 'data' in o ? o.data : out; } catch { return out; } };
 
 // aria-label must match EXACTLY: "Minus key", "Equals key", and "Numpad plus key" all end in
 // "s key" (they end in the letter "s"), so a substring match for e.g. "S key" would grab
@@ -97,7 +99,7 @@ const CANVAS_INFO = `(function(){
   var r=c.getBoundingClientRect();
   return JSON.stringify({x:r.x,y:r.y,w:r.width,h:r.height,attrW:c.width,attrH:c.height});
 })()`;
-const canvasInfo = () => JSON.parse(oc(['eval', CANVAS_INFO]));
+const canvasInfo = () => JSON.parse(evalJs(CANVAS_INFO));
 
 function clickNative(vx, vy) {
   oc(['eval', `(function(){
@@ -113,12 +115,12 @@ function clickNative(vx, vy) {
 }
 
 const VISION_URL = process.env.LABCTL_VISION_URL ?? 'http://localhost:8000/v1';
-const VISION_MODEL = process.env.LABCTL_VISION_MODEL ?? 'Qwen3.5-9B-MLX-8bit';
+const VISION_MODEL = process.env.LABCTL_VISION_MODEL ?? 'gemma-4-12B-it-oQ4e-mtp';
 const VISION_KEY = process.env.LABCTL_VISION_KEY ?? '';
 
 function screenshotBase64() {
   const shotPath = join(tmpdir(), `labctl-${Date.now()}.png`);
-  execFileSync('opencli', ['browser', session, 'screenshot', shotPath]);
+  execFileSync('opencli', ['browser', '--session', session, 'screenshot', shotPath]);
   const image = readFileSync(shotPath).toString('base64');
   unlinkSync(shotPath);
   return image;
@@ -183,7 +185,7 @@ async function look(question) {
 
 switch (cmd) {
   case 'shot':
-    execFileSync('opencli', ['browser', session, 'screenshot', rest[0]], { stdio: 'inherit' });
+    execFileSync('opencli', ['browser', '--session', session, 'screenshot', rest[0]], { stdio: 'inherit' });
     break;
 
   case 'click': {

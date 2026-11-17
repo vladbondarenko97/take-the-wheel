@@ -1,4 +1,4 @@
-name: guard tests
+name: CI   # scripts/mac-cd.sh only deploys a commit whose workflow named CI passed
 
 on:
   push:
@@ -16,6 +16,8 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - name: Syntax check
-        run: for f in setup.mjs runner/*.mjs runner/bin/* test/*.mjs extension/*.js; do node --check "$f" || exit 1; done
+        run: for f in setup.mjs runner/*.mjs runner/lab/*.mjs runner/bin/* test/*.mjs extension/*.js; do node --check "$f" || exit 1; done
+      - name: Shell syntax
+        run: bash -n scripts/mac-cd.sh
       - name: Guard and telemetry tests
         run: node --test test/*.test.mjs

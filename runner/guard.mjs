@@ -8,6 +8,7 @@ import { resolve, sep, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 
 const BLOCKED_SUBCOMMANDS = ['upload']; // attaches local files (say ~/.ssh keys) to a page
+const RAW_ACTIONS = ['click', 'dblclick', 'check', 'uncheck', 'fill', 'type', 'select', 'keys', 'drag'];
 const VALUE_FLAGS = ['--tab', '--width', '--height']; // screenshot flags that take a value, so it isn't mistaken for the path
 
 export const deniedHost = (url, deny) => {
@@ -53,8 +54,13 @@ function checkSegment(w, cfg) {
   const prefix = cfg.bash.map(p => p.split(' ')).find(p => p.every((x, i) => w[i] === x));
   if (!prefix) return `not an allowed command: "${w.join(' ').slice(0, 80)}". Allowed: ${cfg.bash.join(', ')}`;
   if (w[0] !== 'opencli') return null; // ttw/labctl are our own scripts with fixed subcommands
-  const [sub, ...rest] = w.slice(3); // opencli browser <session> <sub> …
+  const [sub, ...rest] = w.slice(4); // opencli browser --session <session> <sub> …
+  if (sub === 'ttw') return `ttw is its own command, not an opencli one: run \`ttw ${rest.join(' ')}\` directly`;
   if (BLOCKED_SUBCOMMANDS.includes(sub)) return `\`${sub}\` is blocked`;
+  // ponytail: small local models skip ttw's submit refusal by clicking raw refs, so they only act through ttw; a site ttw can't read stalls instead
+  if (cfg.ttwActs && RAW_ACTIONS.includes(sub)) return `\`${sub}\` is disabled for this model: act through \`ttw do <ids>\` / \`ttw fill <id> <text>\` (run \`ttw page\` for ids). If ttw can't see the control, stop and tell the user.`;
+  // commander honours the last --session, so a second one would escape the run's session; --profile switches Chrome profile
+  if (rest.some(a => /^--(session|profile)(=|$)/.test(a))) return '`--session`/`--profile` can only be set by the runner';
   if (sub === 'screenshot') return screenshotPath(rest, cfg.shots);
   const urls = sub === 'open' ? rest : sub === 'tab' && rest[0] === 'new' ? rest.slice(1) : [];
   for (const u of urls.filter(x => !x.startsWith('-') || x.includes(':'))) {
@@ -90,13 +96,14 @@ export function check(tool, input, cfg) {
 }
 
 // What the runner adds to a `claude` spawn: the allowlist itself plus this hook enforcing the same rules.
-export function guardArgs(allowedTools, { shots, denySites }) {
+export function guardArgs(allowedTools, { shots, denySites, ttwActs = false }) {
   const settings = { hooks: { PreToolUse: [{ matcher: 'Bash|Read', hooks: [{ type: 'command', command: `"${process.execPath}" "${import.meta.filename}"` }] }] } };
   const cfg = {
     bash: allowedTools.filter(t => t.startsWith('Bash(')).map(t => t.slice(5, -1).replace(/ \*$/, '')),
     read: allowedTools.some(t => t.startsWith('Read(')) ? [shots] : [],
     shots,
     denySites,
+    ttwActs,
   };
   return { args: ['--allowedTools', ...allowedTools, '--settings', JSON.stringify(settings)], env: { TTW_GUARD: JSON.stringify(cfg) } };
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// ttw: generic page helpers for the Take the Wheel agent (wraps `opencli browser task …`).
+// ttw: generic page helpers for the Take the Wheel agent (wraps `opencli browser --session task …`).
 //   ttw page                         digest of the current page with ids (c=choice, i=input, a=advance, f=finish, m=image)
 //   ttw do <id>… [--finish]          click/check ids in order; after an advance, wait for the page to change; print new digest
 //                                    `next` = whatever ADVANCE button exists at that moment (for pages that reveal Next after answering)
@@ -20,12 +20,14 @@ const DIGEST = readFileSync(join(dirname(import.meta.dirname), 'digest.js'), 'ut
 const [cmd, ...args] = process.argv.slice(2);
 
 const oc = (...a) => {
-  try { return execFileSync('opencli', ['browser', 'task', ...a], { encoding: 'utf8', timeout: 25000, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' }); }
+  try { return execFileSync('opencli', ['browser', '--session', 'task', ...a], { encoding: 'utf8', timeout: 25000, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' }); }
   catch (e) {
     if (e.code === 'ETIMEDOUT') die('The browser stopped responding (a native dialog or popup may be blocking the tab). Stop and ask the user to dismiss it (Waiting for you).');
     throw e;
   }
 };
+// opencli 2.x wraps eval output as {"ok":true,"data":…}; 1.x printed the bare value.
+const evalJs = js => { const out = oc('eval', js).trim(); try { const o = JSON.parse(out); return o?.ok === true && 'data' in o ? o.data : out; } catch { return out; } };
 // Before acting, capture the page's alert/confirm/prompt so they can't freeze the tab. Confirms/prompts are cancelled, never accepted.
 const GUARD = `(()=>{if(!window.__ttwGuard){window.__ttwGuard=1;window.__ttwDialogs=[];const log=(k,m)=>window.__ttwDialogs.push(k+': '+String(m).slice(0,200));window.alert=m=>log('alert',m);window.confirm=m=>(log('confirm (cancelled)',m),false);window.prompt=m=>(log('prompt (cancelled)',m),null);}document.dispatchEvent(new CustomEvent('ttw-act'));return 1})()`; // ttw-act lifts the fx.js shield
 const guard = () => { try { oc('eval', GUARD); } catch {} };
@@ -37,7 +39,7 @@ const die = msg => { console.log(msg); process.exit(1); };
 
 const dialogs = []; // alerts/confirms captured by GUARD during this command
 function digest() {
-  const d = JSON.parse(oc('eval', DIGEST));
+  const d = JSON.parse(evalJs(DIGEST));
   dialogs.push(...(d.dialogs || []));
   if (dialogs.length) d.text = d.text.replace(/\n/, `\nPAGE DIALOGS (captured, not shown): ${dialogs.join(' / ')}\n`);
   const s = state();
@@ -56,6 +58,20 @@ function digest() {
   }
   saveState(s);
   return { ...d, text: notes + d.text };
+}
+
+// `opencli check` verifies right after its click, but Chrome throttles a background/occluded window, so the
+// page's handler often hasn't run yet ("not_checkable"), and opencli 2.x won't send native input to it at all.
+// Wait for a click to land; if it never does, click it from JS (needs no focus) — only while it's still
+// unchecked, so a late click is never toggled back off.
+const jsClick = sel => { try { return String(evalJs(`(e => (e?.click(), !!e))(document.querySelector(${JSON.stringify(sel)}))`)) === 'true'; } catch { return false; } };
+async function nativeCheck(sel) {
+  const q = `document.querySelector(${JSON.stringify(sel)})`;
+  const checked = () => { try { return String(evalJs(`!!${q}?.checked`)) === 'true'; } catch { return false; } };
+  for (let t = 0; t < 4; t++) { if (checked()) return true; await sleep(500); }
+  try { oc('eval', `(${q}?.checked || ${q}?.click(), 1)`); } catch {}
+  for (let t = 0; t < 4; t++) { await sleep(500); if (checked()) return true; }
+  return false;
 }
 
 async function waitForChange(oldFp) {
@@ -101,7 +117,12 @@ const run = async () => {
       }
       guard();
       try { oc(it.kind === 'native' ? 'check' : 'click', it.sel); }
-      catch (e) { die(`${id} failed: ${String(e.stdout || e.message).slice(0, 400)}\nRun \`ttw page\` and retry.`); }
+      catch (e) {
+        // A hidden/background window: opencli 1.x clicks but verifies too early (not_checkable), 2.x refuses to click at all.
+        const out = String(e.stdout || ''), hidden = /not dispatched|visible browser page/.test(out);
+        const ok = it.kind === 'native' ? (hidden || /not_checkable/.test(out)) && await nativeCheck(it.sel) : hidden && jsClick(it.sel);
+        if (!ok) die(`${id} failed: ${String(e.stdout || e.message).slice(0, 400)}\nRun \`ttw page\` and retry.`);
+      }
       if (it.kind === 'advance' || it.kind === 'finish') advanced = true;
     }
     const out = advanced ? await waitForChange(s.fp) : digest();
@@ -123,7 +144,7 @@ const run = async () => {
     oc('screenshot', ...(args.includes('--annotate') ? ['--annotate'] : []), file);
     const old = readdirSync(SHOTS).map(f => join(SHOTS, f)).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
     for (const f of old.slice(40)) unlinkSync(f);
-    return console.log(`Screenshot saved: ${file}\nView it with the Read tool.${args.includes('--annotate') ? ' Numbers on it are opencli refs: `opencli browser task click <N>`.' : ''}`);
+    return console.log(`Screenshot saved: ${file}\nView it with the Read tool.${args.includes('--annotate') ? ' Numbers on it are opencli refs: `opencli browser --session task click <N>`.' : ''}`);
   }
 
   if (cmd === 'note') {

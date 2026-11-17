@@ -1,4 +1,4 @@
-// Generic page digest for `ttw page`. Runs in the page via `opencli browser task eval`; returns a JSON string.
+// Generic page digest for `ttw page`. Runs in the page via `opencli browser --session task eval`; returns a JSON string.
 // Finds the question, its choices (native or custom widgets), text inputs, images, advance/finish buttons and progress,
 // without knowing anything about the site.
 (() => {

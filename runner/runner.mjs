@@ -25,7 +25,7 @@ const PROMPT_LAB = readFileSync(join(HERE, 'lab-agent-prompt.md'), 'utf8');
 const PROMPT_PLAN = readFileSync(join(HERE, 'lab-plan-prompt.md'), 'utf8');
 const LAB_SESSIONS = ['instructions', 'vm'];
 const DENY = JSON.parse(readFileSync(join(HERE, 'denylist.json'), 'utf8'));
-const VISION_MODEL = process.env.LABCTL_VISION_MODEL ?? 'Qwen3.5-9B-MLX-8bit'; // keep in sync with labctl.mjs's own default
+const VISION_MODEL = process.env.LABCTL_VISION_MODEL ?? 'gemma-4-12B-it-oQ4e-mtp'; // keep in sync with labctl.mjs's own default
 const VISION_URL = process.env.LABCTL_VISION_URL ?? 'http://localhost:8000/v1'; // same default as labctl.mjs
 // oMLX requires an API key; default to the local oMLX install's own key so it works with no setup.
 let VISION_KEY = process.env.LABCTL_VISION_KEY ?? '';
@@ -51,9 +51,13 @@ const ENV = { ...process.env, PATH: `${join(HERE, 'bin')}${delimiter}${process.e
 // When the runner is started from inside a Claude Code session, don't let the agent inherit that session
 // (remote-control bridge, messaging socket, session ids): it attaches the child to it and bloats every run.
 for (const k of Object.keys(ENV)) if (k === 'CLAUDECODE' || k === 'CLAUDE_PID' || k === 'CLAUDE_EFFORT' || k.startsWith('CLAUDE_CODE_')) delete ENV[k];
-const guard = allowed => guardArgs(allowed, { shots: SHOTS, denySites: DENY }); // guard.mjs explains why --allowedTools alone isn't enough
+const guard = (allowed, ttwActs) => guardArgs(allowed, { shots: SHOTS, denySites: DENY, ttwActs }); // guard.mjs explains why --allowedTools alone isn't enough
 // Which backend the agent's claude runs on: the user's Claude Code login, or Amazon Bedrock with an approved model.
-const modelFor = (provider, model) => {
+// model 'local' = the oMLX vision model itself as the agent (oMLX also serves the Anthropic API), so only one model is ever loaded.
+const modelFor = (provider, model, vision = visionCfg()) => {
+  if (model === 'local') return { model: vision.model, local: true, env: {
+    ANTHROPIC_BASE_URL: vision.url.replace(/\/v1$/, ''), ANTHROPIC_AUTH_TOKEN: VISION_KEY || 'none', ANTHROPIC_API_KEY: '',
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', API_TIMEOUT_MS: '600000' } };
   const alias = ['sonnet', 'opus'].includes(model) ? model : 'haiku';
   return provider === 'bedrock' ? { model: APPROVED[alias], env: { CLAUDE_CODE_USE_BEDROCK: '1', AWS_REGION: region() } } : { model: alias, env: {} };
 };
@@ -61,7 +65,7 @@ let child = null;
 
 const WIN = process.platform === 'win32'; // npm global installs are .cmd shims on Windows; spawn/execFile need shell:true to resolve them
 const run = (cmd, args) => new Promise(r => execFile(cmd, args, { timeout: 20000, shell: WIN }, (e, out, err) => r(String(out || '') + String(err || ''))));
-const unbind = () => run('opencli', ['browser', SESSION, 'unbind']);
+const unbind = () => run('opencli', ['browser', '--session', SESSION, 'unbind']);
 const denied = url => deniedHost(url, DENY);
 const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 const clip = (s, n = 300) => (s = String(s ?? '')).length > n ? s.slice(0, n) + '…' : s;
@@ -93,9 +97,9 @@ function describe(cmd, st) {
     else if (/^labctl \S+ username/.test(part)) steps.push('Typing the lab username');
     else if (/^labctl \S+ password/.test(part)) steps.push('Typing the lab password');
     else if (/^labctl \S+ shot/.test(part)) steps.push('Screenshotting the VM screen');
-    else if ((m = part.match(/^opencli browser \S+ open\s+["']?([^"'\s]+)/))) { try { steps.push(`Opening ${new URL(m[1]).hostname}`); } catch { steps.push('Opening a page'); } }
-    else if ((m = part.match(/^opencli browser \S+ keys\s+(\S+)/))) steps.push(`Pressing ${m[1]}`);
-    else if ((m = part.match(/^opencli browser \S+ (\w+)/)) && OC[m[1]]) steps.push(OC[m[1]]);
+    else if ((m = part.match(/^opencli browser --session \S+ open\s+["']?([^"'\s]+)/))) { try { steps.push(`Opening ${new URL(m[1]).hostname}`); } catch { steps.push('Opening a page'); } }
+    else if ((m = part.match(/^opencli browser --session \S+ keys\s+(\S+)/))) steps.push(`Pressing ${m[1]}`);
+    else if ((m = part.match(/^opencli browser --session \S+ (\w+)/)) && OC[m[1]]) steps.push(OC[m[1]]);
   }
   return steps.filter((x, i) => x !== steps[i - 1]);
 }
@@ -157,15 +161,15 @@ function startTask(res, { task, tabUrl = '', provider = 'claude', model = 'haiku
   if (!['low', 'medium', 'high'].includes(effort)) effort = 'low';
   // Submitting is only unlocked by the user's own words.
   const allowFinish = /\b(submit|finish|turn (it )?in|hand (it )?in)\b/i.test(task) && !/\b(don'?t|do not|never|without|not)\b[^.]{0,25}\b(submit|finish)/i.test(task);
-  if (provider === 'bedrock') search = false; // WebSearch isn't available on Bedrock
+  const m = modelFor(provider, model, vision);
+  if (provider === 'bedrock' || m.local) search = false; // WebSearch is an Anthropic server tool: not on Bedrock or oMLX
   if (search) task = `SEARCH MODE is on. ${task}`;
-  const m = modelFor(provider, model);
   // Lab mode: the panel already bound `instructions` and `vm` to their tabs (focus-switch +
   // bind has to happen from the extension, which is the only side with chrome.tabs/windows
   // access) before this request was sent, so the agent must not bind/unbind either itself.
   const tab = lab
     ? `Sessions "instructions" and "vm" are already bound to their tabs.`
-    : `Current tab: ${tabUrl || 'unknown'}. First run: opencli browser ${SESSION} bind`;
+    : `Current tab: ${tabUrl || 'unknown'}. First run: opencli browser --session ${SESSION} bind`;
   const grantRead = useVision && !(lab && localVision); // local vision mode: labctl's own vision instead; useVision off: no vision at all
   // Without this, "Read is denied" would otherwise look like a bug to the agent instead of a
   // deliberate setting -- it needs to know up front, not discover it via a denied tool call.
@@ -175,7 +179,7 @@ function startTask(res, { task, tabUrl = '', provider = 'claude', model = 'haiku
     ? `Follow-up in the same conversation. ${lab ? tab : `${tab} again (the tab was released between messages)`} and re-read the page before acting.${visionNote} User: ${task}`
     : `${lab ? '' : `Session name: ${SESSION}. `}${tab}.${visionNote} Task: ${task}`;
   const tools = ['Bash', ...(grantRead ? ['Read'] : []), ...(search ? ['WebSearch'] : [])].join(',');
-  const g = guard(['Bash(opencli browser task *)', 'Bash(ttw *)', ...(lab ? ['Bash(opencli browser instructions *)', 'Bash(opencli browser vm *)', 'Bash(labctl *)'] : []), ...(grantRead ? [`Read(/${SHOTS}/**)`] : []), ...(search ? ['WebSearch'] : [])]);
+  const g = guard(['Bash(opencli browser --session task *)', 'Bash(ttw *)', ...(lab ? ['Bash(opencli browser --session instructions *)', 'Bash(opencli browser --session vm *)', 'Bash(labctl *)'] : []), ...(grantRead ? [`Read(/${SHOTS}/**)`] : []), ...(search ? ['WebSearch'] : [])], m.local);
   child = spawn('claude', ['-p', wrapped, ...(sessionId ? ['--resume', sessionId] : []),
     '--model', m.model, '--effort', effort,
     '--system-prompt', lab ? PROMPT_LAB : PROMPT, '--tools', tools,
@@ -188,7 +192,7 @@ function startTask(res, { task, tabUrl = '', provider = 'claude', model = 'haiku
   const me = child;
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
   const send = tap({ mode: lab ? 'lab' : 'task', provider, model: m.model, effort, resume: !!sessionId }, ev => res.write(`data: ${JSON.stringify(ev)}\n\n`));
-  send({ kind: 'start', text: `${model}${provider === 'bedrock' ? ' (Bedrock)' : ''} · ${effort} effort · search ${search ? 'on' : 'off'}${!useVision ? ' · vision off' : ''}${lab ? ' · lab mode' : ''}${lab && localVision ? ' · local vision' : ''} · $${maxBudgetUsd} cap` });
+  send({ kind: 'start', text: `${m.local ? m.model : model}${provider === 'bedrock' && !m.local ? ' (Bedrock)' : ''} · ${effort} effort · search ${search ? 'on' : 'off'}${!useVision ? ' · vision off' : ''}${lab ? ' · lab mode' : ''}${lab && localVision ? ' · local vision' : ''} · $${maxBudgetUsd} cap` });
   let buf = '', errBuf = '';
   const st = { labels: {}, q: '' };
   me.stdout.on('data', d => {
@@ -210,7 +214,7 @@ function startTask(res, { task, tabUrl = '', provider = 'claude', model = 'haiku
 // and the full-agent fallback call -- startTask itself is left untouched (proven, don't risk
 // it) and does its own independent spawn.
 function spawnClaudeCollect({ wrapped, provider, model, effort, systemPrompt, tools, allowedTools, maxBudgetUsd, sessionId, env, send, st }) {
-  const g = guard(allowedTools), m = modelFor(provider, model);
+  const g = guard(allowedTools), m = modelFor(provider, model, { url: env.LABCTL_VISION_URL, model: env.LABCTL_VISION_MODEL });
   return new Promise(resolve => {
     const c = spawn('claude', ['-p', wrapped, ...(sessionId ? ['--resume', sessionId] : []),
       '--model', m.model, '--effort', effort,
@@ -260,7 +264,7 @@ async function runPlanTask(res, body) {
   const vision = visionCfg({ visionUrl, visionModel });
   const visionEnv = { ...visionEnvFor(vision) };
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
-  const send = tap({ mode: 'plan', provider, model: modelFor(provider, model).model, effort, resume: !!sessionId }, ev => res.write(`data: ${JSON.stringify(ev)}\n\n`));
+  const send = tap({ mode: 'plan', provider, model: modelFor(provider, model, vision).model, effort, resume: !!sessionId }, ev => res.write(`data: ${JSON.stringify(ev)}\n\n`));
   res.on('close', () => child?.kill('SIGINT')); // panel closed -> stop driving, whichever phase is active
   const st = { labels: {}, q: '' };
   send({ kind: 'start', text: `${model} · ${effort} effort · plan mode${!useVision ? ' · vision off' : ''}${localVision ? ' · local vision' : ''} · $${maxBudgetUsd} cap` });
@@ -275,7 +279,7 @@ async function runPlanTask(res, body) {
     const tools = ['Bash', ...(grantRead ? ['Read'] : [])].join(',');
     const fb = await spawnClaudeCollect({
       wrapped, provider, model, effort, systemPrompt: PROMPT_LAB, tools, sessionId,
-      allowedTools: ['Bash(opencli browser task *)', 'Bash(opencli browser instructions *)', 'Bash(opencli browser vm *)', 'Bash(ttw *)', 'Bash(labctl *)', ...(grantRead ? [`Read(/${SHOTS}/**)`] : [])],
+      allowedTools: ['Bash(opencli browser --session task *)', 'Bash(opencli browser --session instructions *)', 'Bash(opencli browser --session vm *)', 'Bash(ttw *)', 'Bash(labctl *)', ...(grantRead ? [`Read(/${SHOTS}/**)`] : [])],
       maxBudgetUsd: Math.max(0.1, (Number(maxBudgetUsd) || 0.75) - planRun.cost), env: visionEnv, send, st,
     });
     send({ kind: 'done', text: fb.finalText, cost: planRun.cost + fb.cost, turns: planRun.turns + fb.turns, error: fb.isError, subtype: fb.isError ? 'error' : 'success' });
@@ -287,7 +291,7 @@ async function runPlanTask(res, body) {
   planRun = await spawnClaudeCollect({
     wrapped: `Sessions "instructions" and "vm" are already bound. Plan the next part of this task: ${task}`,
     provider, model, effort, systemPrompt: PROMPT_PLAN, tools: 'Bash', sessionId,
-    allowedTools: ['Bash(opencli browser instructions *)', 'Bash(labctl vm look *)'],
+    allowedTools: ['Bash(opencli browser --session instructions *)', 'Bash(labctl vm look *)'],
     maxBudgetUsd: planBudget, env: visionEnv, send, st,
   });
 
@@ -358,7 +362,7 @@ http.createServer(async (req, res) => {
     if (!LAB_SESSIONS.includes(body.session)) return json(res, 400, { error: `session must be one of: ${LAB_SESSIONS.join(', ')}` });
     // Binds whatever tab is currently active -- the panel must have focused the right
     // window/tab (chrome.windows.update + chrome.tabs.update) immediately before this call.
-    const out = await run('opencli', ['browser', body.session, 'bind']);
+    const out = await run('opencli', ['browser', '--session', body.session, 'bind']);
     try { return json(res, 200, JSON.parse(out)); } catch { return json(res, 502, { error: out.trim() }); }
   }
   if (req.method === 'POST' && path === '/lab/vision/unload') {
@@ -387,9 +391,10 @@ http.createServer(async (req, res) => {
   }
   if (req.method === 'GET' && path === '/stats') return json(res, 200, await stats(new URL(req.url, 'http://x').searchParams.get('session')));
   if (req.method === 'POST' && path === '/stop') {
-    if (child) child.kill('SIGINT');
+    // SIGINT first so claude saves the session; a run stuck in a slow model call (local 12B) ignores it for minutes, so then kill it.
+    if (child) { const c = child; c.kill('SIGINT'); setTimeout(() => c.exitCode === null && c.kill('SIGKILL'), 3000); }
     await unbind();
-    for (const s of LAB_SESSIONS) await run('opencli', ['browser', s, 'unbind']);
+    for (const s of LAB_SESSIONS) await run('opencli', ['browser', '--session', s, 'unbind']);
     return json(res, 200, { stopped: true });
   }
   json(res, 404, { error: 'not found' });

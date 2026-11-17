@@ -34,7 +34,7 @@ flowchart TB
   P["🧭 Side panel<br/>you type a task"] -->|"task · live progress"| R["⚙️ runner.mjs<br/>local only · token · budget cap"]
   R -->|spawns| C["🤖 claude -p<br/>Haiku · Sonnet · Opus"]
   C -->|"every Bash / Read call"| G{"🛡️ guard.mjs<br/>PreToolUse hook"}
-  G -->|allowed| O["opencli browser task …<br/>ttw …"]
+  G -->|allowed| O["opencli browser --session task …<br/>ttw …"]
   G -.->|blocked, with the reason| C
   O -->|"trusted CDP clicks & keys"| X["🌐 Your logged-in Chrome tab"]
 ```
@@ -54,8 +54,8 @@ flowchart TB
 
 - `opencli gh …` runs the GitHub CLI **with the user's own login** (it returned the account name; `repo delete` would work the same way)
 - `opencli plugin install …` installs third-party code
-- `opencli browser task upload …` attaches local files, such as SSH keys, to a web form
-- `opencli browser task open https://<bank>` navigates to a denylisted site mid-task, because the denylist only checked the starting tab
+- `opencli browser --session task upload …` attaches local files, such as SSH keys, to a web form
+- `opencli browser --session task open https://<bank>` navigates to a denylisted site mid-task, because the denylist only checked the starting tab
 
 | | `execute pwd` | `opencli gh api user` |
 |:-:|:-:|:-:|
@@ -67,7 +67,7 @@ flowchart TB
 **The fix.** [`runner/guard.mjs`](runner/guard.mjs) is a **PreToolUse hook**: Claude Code runs it before every Bash and Read call, and its deny can't be overridden by an allow rule or by the model.
 
 - **Parses like bash.** It is quote-aware and splits only on `&&`. Pipes, `;`, redirects, `$(…)` and backticks are refused, but `labctl vm type "a | b"` is still fine.
-- **Allows only this run's commands.** `opencli browser task …` and `ttw …`, compared word by word, with the lab sessions added in lab mode.
+- **Allows only this run's commands.** `opencli browser --session task …` and `ttw …`, compared word by word, with the lab sessions added in lab mode.
 - **Checks arguments, not just the command name.** `open` accepts only http(s) URLs to sites not on the denylist. `upload` is refused. Screenshots can be saved only into the folder the agent is allowed to read.
 - **Fails closed.** If its config is missing, everything is blocked.
 - **One source of truth.** The runner builds a single list per run, and both `--allowedTools` and the hook config come from it.
@@ -118,7 +118,7 @@ All figures are Claude Code's per-run cost estimates, from runs on 2026-09-30.
 1. `npm i -g @jackwener/opencli`
 2. Install the **OpenCLI** extension from the [Chrome Web Store](https://chromewebstore.google.com/detail/opencli/ildkmabpimmkaediidaifkhjpohdnifk). `opencli doctor` should show no `[MISSING]` or `[FAIL]` lines.
 3. `chrome://extensions` → Developer mode → **Load unpacked** → select `extension/`.
-4. `node setup.mjs`. It installs the optional AWS Bedrock SDK, then installs the runner as a login item (macOS LaunchAgent or Windows scheduled task) that restarts if it crashes and logs to `~/.take-the-wheel/runner.log`. On other systems, run `node runner/runner.mjs` yourself.
+4. `node setup.mjs`. It installs the optional AWS Bedrock SDK, then installs the runner as a login item (macOS LaunchAgent or Windows scheduled task) that restarts if it crashes and logs to `~/.take-the-wheel/runner.log`. On other systems, run `node runner/runner.mjs` yourself. On macOS it also installs `com.takethewheel.deploy`, which runs [`scripts/mac-cd.sh`](scripts/mac-cd.sh) every minute: once GitHub's `CI` passes a new `main`, it fast-forwards a clean checkout and restarts the runner (never mid-run). It logs to `~/.take-the-wheel/deploy.log`.
 5. Paste the token from `runner/.token` into the side panel. The dot turns green when the runner, OpenCLI and Claude are all OK.
 
 ## Using it
@@ -127,7 +127,7 @@ Open the tab you want driven, click the Take the Wheel icon, type the task, and 
 
 - **Conversations.** ＋ starts one, the dropdown switches, 🗑 deletes. Typing in an existing conversation resumes the same Claude session (the button says **Continue**), so it remembers everything instead of re-exploring. Start a new one for unrelated tasks, because every follow-up re-reads the whole history.
 - **Handoffs.** Say "pause", "wait" or "stop at…" and it stops there. It also stops on logins, CAPTCHAs and questions only you can answer, ending with an amber **Waiting for you** card. Do your part, then reply ("done, continue").
-- **Models.** Haiku by default. Use Sonnet or Opus when the task needs judgment. The `$` figures are Claude Code's API-price estimates and count against your plan.
+- **Models.** Haiku by default. Use Sonnet or Opus when the task needs judgment. **Gemma 12B (local)** runs the agent on your oMLX vision model (the same server and model as local vision), for free and much slower. Web search is off for it, and the guard only lets it act through `ttw do`/`ttw fill`, which refuse Submit buttons. The `$` figures are Claude Code's API-price estimates and count against your plan.
 
 <details>
 <summary><b>Any quiz or form, no site-specific code (<code>runner/bin/ttw</code>)</b></summary>
