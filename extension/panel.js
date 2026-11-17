@@ -1,7 +1,7 @@
 const RUNNER = 'http://127.0.0.1:19826';
 const $ = id => document.getElementById(id);
 const auth = () => ({ authorization: `Bearer ${$('token').value.trim()}` });
-let running = false;
+let running = false, stopping = false, runLocal = false; // stopping: Stop was pressed this run; runLocal: it runs on the local model (free)
 
 // Conversations: each keeps its claude session id, so follow-ups resume with full memory instead of re-exploring.
 let convos = {}, current = null;
@@ -105,7 +105,7 @@ const show = {
   tool: (e, c) => log(c, '▶ ' + e.text.replaceAll('opencli browser --session task ', ''), 'tool'),
   out: (e, c) => log(c, '  ↳ ' + e.text, e.error ? 'err' : 'out'),
   vision: (e, c) => log(c, '👁 ' + e.text, 'vision'),
-  error: (e, c) => log(c, '✗ ' + e.text, 'err'),
+  error: (e, c) => { if (!stopping) log(c, '✗ ' + e.text, 'err'); }, // after Stop it's only the killed agent's stderr
   done: (e, c) => {
     // The final assistant message becomes the result card (it already arrived as a text line).
     const cls = /Waiting for you:/i.test(e.text ?? '') ? 'result wait' : 'result';
@@ -114,8 +114,11 @@ const show = {
     if (e.text) log(c, e.text, cls);
     // claude reports cost cumulatively over a resumed session; show this run's share and the conversation total.
     const total = e.cost ?? 0, prev = c.cost ?? 0, run = total >= prev ? total - prev : total;
-    c.cost = total;
-    log(c, `${e.error ? '✗' : '✓'} ${e.subtype === 'success' ? 'done' : e.subtype} — $${run.toFixed(3)} est., ${e.turns} turns` + (prev ? ` (conversation $${total.toFixed(3)})` : ''), e.error ? 'err' : 'done');
+    if (!runLocal) c.cost = total;
+    // A local model costs nothing (claude's estimate is a made-up API price), and Stop isn't a failure.
+    const price = runLocal ? 'free (local model)' : `$${run.toFixed(3)} est.` + (prev ? ` (conversation $${total.toFixed(3)})` : '');
+    if (stopping) log(c, `■ stopped by request — ${price}, ${e.turns} turns`, 'step');
+    else log(c, `${e.error ? '✗' : '✓'} ${e.subtype === 'success' ? 'done' : e.subtype} — ${price}, ${e.turns} turns`, e.error ? 'err' : 'done');
     if (c.id === current) render(true);
   },
   end: () => {},
@@ -164,7 +167,7 @@ async function go() {
     [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab) await chrome.tabs.update(tab.id, { active: true }); // opencli binds the active tab
   }
-  running = true; $('go').disabled = true; render();
+  running = true; stopping = false; runLocal = $('model').value === 'local'; $('go').disabled = true; render();
   if (!c.sessionId) c.title = task.slice(0, 60);
   c.updated = Date.now();
   log(c, task, 'task');
@@ -201,7 +204,8 @@ async function fx(tabId, on) {
 }
 
 async function stop() {
-  try { await fetch(`${RUNNER}/stop`, { method: 'POST', headers: auth() }); log(cur(), '■ stop sent', 'err'); }
+  stopping = true;
+  try { await fetch(`${RUNNER}/stop`, { method: 'POST', headers: auth() }); log(cur(), '■ stop sent', 'step'); }
   catch (err) { log(cur(), '✗ ' + err.message, 'err'); }
 }
 
