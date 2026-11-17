@@ -81,6 +81,10 @@ function screenshotPath(args, shots) {
   return null;
 }
 
+// Small models write `opencli browser --session task ttw do c1 a1`. That can only mean `ttw do c1 a1`, so the hook runs
+// that instead of spending a whole (slow) turn on a refusal. The rewritten command still goes through check().
+export const fixCommand = cmd => cmd.replace(/(^|&&\s*)opencli\s+browser\s+--session\s+\S+\s+(?=ttw\s)/g, '$1');
+
 export function check(tool, input, cfg) {
   if (tool === 'Bash') {
     const segs = segments(String(input.command ?? ''));
@@ -115,6 +119,11 @@ if (process.argv[1] && resolve(process.argv[1]) === import.meta.filename) {
   try {
     const cfg = JSON.parse(process.env.TTW_GUARD);
     const { tool_name, tool_input = {} } = JSON.parse(raw);
+    const fixed = tool_name === 'Bash' && fixCommand(String(tool_input.command ?? ''));
+    if (fixed && fixed !== tool_input.command && !check(tool_name, { ...tool_input, command: fixed }, cfg)) {
+      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput: { ...tool_input, command: fixed } } }));
+      process.exit(0);
+    }
     reason = check(tool_name, tool_input, cfg);
   } catch (e) { reason = `guard misconfigured: ${e.message}`; }
   if (reason) { process.stderr.write(`Blocked by Take the Wheel: ${reason}`); process.exit(2); }

@@ -1,7 +1,7 @@
 // node --test test/   (no deps). Unit tests for runner/guard.mjs: what the agent may and may not run.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { check, guardArgs } from '../runner/guard.mjs';
+import { check, guardArgs, fixCommand } from '../runner/guard.mjs';
 
 const DENY = ['chase.com', 'mail.google.com'];
 // The same allowlists runner.mjs builds: normal task, lab task, lab plan step.
@@ -106,4 +106,11 @@ test('local model acts only through ttw; ttw run via opencli gets a pointer', ()
   for (const c of ['opencli browser --session task click 5', 'opencli browser --session task state && opencli browser --session task check 3', 'opencli browser --session task keys Enter'])
     assert.match(bash(LOCAL, c), /disabled for this model/, c);
   assert.equal(bash(TASK, 'opencli browser --session task click 5'), null); // Claude models keep raw clicks
+});
+
+test('`opencli … ttw …` is rewritten to the ttw command it means', () => {
+  assert.equal(fixCommand('opencli browser --session task ttw do c1 a1'), 'ttw do c1 a1');
+  assert.equal(fixCommand('opencli browser --session task bind && opencli browser --session task ttw page'), 'opencli browser --session task bind && ttw page');
+  assert.equal(fixCommand('opencli browser --session task click 3'), 'opencli browser --session task click 3');
+  assert.equal(fixCommand('ttw note "opencli browser --session task ttw is wrong"'), 'ttw note "opencli browser --session task ttw is wrong"');
 });
