@@ -13,6 +13,7 @@ const readSettings = () => ({ model: $('model').value, effort: $('effort').value
 function applySettings(st) {
   if (!st) return;
   $('model').value = st.model; $('effort').value = st.effort; $('search').checked = !!st.search; $('lab').checked = !!st.lab; $('localVision').checked = !!st.localVision; $('planMode').checked = !!st.planMode;
+  applyProvider();
   $('useVision').checked = st.useVision !== false; // defaults ON, unlike the others -- undefined (older saved settings) must stay ON, not OFF
   $('budget').value = st.budget;
 }
@@ -211,6 +212,7 @@ chrome.storage.local.get(['token', 'model', 'budget', 'convos', 'current', 'sear
   if (s.model) $('model').value = s.model;
   if (s.budget) $('budget').value = s.budget;
   $('search').checked = !!s.search;
+  applyProvider();
   $('lab').checked = !!s.lab;
   $('localVision').checked = !!s.localVision;
   $('planMode').checked = !!s.planMode;
@@ -246,7 +248,8 @@ async function loadStats() {
 }
 $('statsBtn').onclick = () => { $('stats').hidden = !$('stats').hidden; if (!$('stats').hidden) loadStats(); };
 $('gear').onclick = () => { $('settings').hidden = $('visionSettings').hidden = $('providerSettings').hidden = !$('settings').hidden; };
-const applyProvider = () => { const b = $('provider').value === 'bedrock'; $('search').disabled = b; if (b) $('search').checked = false; }; // no WebSearch on Bedrock
+// WebSearch is an Anthropic server tool: none on Bedrock or a local (oMLX) model, so the box is greyed out there.
+const applyProvider = () => { const b = $('provider').value === 'bedrock' || $('model').value === 'local'; $('search').disabled = b; if (b) $('search').checked = false; };
 chrome.storage.local.get('provider', s => { $('provider').value = s.provider || 'claude'; applyProvider(); });
 $('provider').onchange = () => { chrome.storage.local.set({ provider: $('provider').value }); applyProvider(); };
 $('bedrockTest').onclick = async () => {
@@ -277,7 +280,7 @@ chrome.storage.local.get(['fxCorner', 'details'], s => {
   $('details').checked = !!s.details; document.body.classList.toggle('details', !!s.details);
 });
 // Switching model within a conversation picks that model's last effort.
-$('model').onchange = () => { showEffort(); saveSettings(); };
+$('model').onchange = () => { showEffort(); applyProvider(); saveSettings(); };
 $('effort').onchange = () => { effortByModel[$('model').value] = $('effort').value; chrome.storage.local.set({ effortByModel }); saveSettings(); };
 $('useVision').onchange = saveSettings;
 $('search').onchange = saveSettings;

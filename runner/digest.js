@@ -99,7 +99,9 @@
   }
   asked ||= fallback;
   for (let k = 0; box && k < 5; k++, box = box.parentElement) {
-    question = clean((box.innerText || '').split('\n').filter(l => clean(l) && ![...choiceText].some(c => c && clean(l) === c)).join(' '));
+    // Site menus inside the box (Cengage's sidebar <nav>) are not the question; `opencli state`/`extract` still see them.
+    const nav = new Set([...box.querySelectorAll(CHROME)].flatMap(c => (c.innerText || '').split('\n').map(clean)).filter(Boolean));
+    question = clean((box.innerText || '').split('\n').filter(l => clean(l) && !nav.has(clean(l)) && ![...choiceText].some(c => c && clean(l) === c)).join(' '));
     if (question.length >= 12) break;
   }
   // No choices (feedback/explanation/start screens): take the text around the advance button, else the main content.

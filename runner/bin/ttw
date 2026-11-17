@@ -29,7 +29,9 @@ const oc = (...a) => {
 // opencli 2.x wraps eval output as {"ok":true,"data":…}; 1.x printed the bare value.
 const evalJs = js => { const out = oc('eval', js).trim(); try { const o = JSON.parse(out); return o?.ok === true && 'data' in o ? o.data : out; } catch { return out; } };
 // Before acting, capture the page's alert/confirm/prompt so they can't freeze the tab. Confirms/prompts are cancelled, never accepted.
-const GUARD = `(()=>{if(!window.__ttwGuard){window.__ttwGuard=1;window.__ttwDialogs=[];const log=(k,m)=>window.__ttwDialogs.push(k+': '+String(m).slice(0,200));window.alert=m=>log('alert',m);window.confirm=m=>(log('confirm (cancelled)',m),false);window.prompt=m=>(log('prompt (cancelled)',m),null);}document.dispatchEvent(new CustomEvent('ttw-act'));return 1})()`; // ttw-act lifts the fx.js shield
+const GUARD = `(()=>{if(!window.__ttwGuard){window.__ttwGuard=1;window.__ttwDialogs=[];const log=(k,m)=>window.__ttwDialogs.push(k+': '+String(m).slice(0,200));window.alert=m=>log('alert',m);window.confirm=m=>(log('confirm (cancelled)',m),false);window.prompt=m=>(log('prompt (cancelled)',m),null);}if(!window.__ttwAwake){window.__ttwAwake=1;const hid=Object.getOwnPropertyDescriptor(Document.prototype,'hidden').get,raf=window.requestAnimationFrame.bind(window),caf=window.cancelAnimationFrame.bind(window);window.requestAnimationFrame=cb=>hid.call(document)?-setTimeout(()=>cb(performance.now()),16):raf(cb);window.cancelAnimationFrame=id=>id<0?clearTimeout(-id):caf(id);}document.dispatchEvent(new CustomEvent('ttw-act'));return 1})()`; // ttw-act lifts the fx.js shield
+// __ttwAwake: Chrome runs no animation frames in a hidden/covered window, and players like Cengage's only show the next
+// question on one, so while hidden, requestAnimationFrame falls back to a timer (negative ids, so cancel can tell them apart).
 const guard = () => { try { oc('eval', GUARD); } catch {} };
 const state = () => existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, 'utf8')) : { map: {}, notesShown: [] };
 const saveState = s => writeFileSync(STATE_FILE, JSON.stringify(s));
