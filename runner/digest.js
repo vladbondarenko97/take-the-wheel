@@ -153,7 +153,7 @@
   };
   for (const g of gnames) {
     if (gnames.length > 1) lines.push(`  Q ${g}: ${groupQuestion(groups[g])}`);
-    for (const [i, label] of groups[g]) lines.push(`    ${add('c', i, 'native')} ${i.checked ? '*' : ' '} ${label}`);
+    for (const [i, label] of groups[g]) lines.push(`    ${add('c', i, 'native', i.type === 'radio' ? { radio: g } : {})} ${i.checked ? '*' : ' '} ${label}`);
   }
   for (const e of aria) {
     const on = ['aria-checked', 'aria-pressed', 'aria-selected'].some(a => e.getAttribute(a) === 'true');

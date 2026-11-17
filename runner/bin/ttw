@@ -100,6 +100,10 @@ const run = async () => {
     const ids = args.filter(a => a !== '--finish');
     const s = state();
     if (!ids.length) die('usage: ttw do <id>… [--finish]');
+    // Radios keep only the last click, so "c1 c3 c4" on a single-answer question silently answers c4.
+    const radios = ids.filter(id => s.map[id]?.radio !== undefined);
+    const dup = radios.find((id, k) => radios.slice(k + 1).some(o => s.map[o].radio === s.map[id].radio));
+    if (dup) die(`refused: ${radios.filter(id => s.map[id].radio === s.map[dup].radio).join(' and ')} are radio buttons of one single-answer question: pick exactly one.`);
     const lastQ = st => st.total && st.cur && st.cur >= st.total;
     for (const id of ids) {
       if (id === 'next') { if (lastQ(s) && !finishOk) die(`refused: this looks like the last question (${s.cur} of ${s.total}); advancing may submit. Stop here unless the user asked to submit.`); continue; }
