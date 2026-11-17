@@ -2,7 +2,7 @@
 # Pull-based CD for a Mac running Take the Wheel (com.takethewheel.deploy, every minute, installed by setup.mjs): when
 # origin/main has commits this checkout lacks and GitHub Actions' CI passed them, fast-forward and reload what changed.
 # Same shape as ~/dev/infra/deploy.sh (docs.vlad.yt projects/cicd-new-project.md, section B).
-#   runner/, package*.json -> restart com.takethewheel.runner (npm install first if package*.json changed)
+#   runner/, package*.json -> restart com.takethewheel.runner (npm ci first if package*.json changed)
 #   extension/             -> notify: reload it in chrome://extensions (Chrome won't let a script do it)
 # Never touches a checkout with local edits or unpushed commits, and never restarts the runner mid-run.
 # CI status comes from the public GitHub API, so no `gh` login is needed. Optional NTFY_TOPIC in ~/.take-the-wheel/env.
@@ -39,7 +39,7 @@ curl -s -m 5 -H "Authorization: Bearer $TOKEN" localhost:19826/health | grep -q 
 changed=$(git diff --name-only HEAD origin/main)
 git merge -q --ff-only origin/main >> "$LOG" 2>&1 || { note "deploy failed" "fast-forward to ${main:0:7} failed"; exit 0; }
 done_=()
-grep -qE '^package(-lock)?\.json$' <<< "$changed" && { npm install --no-audit --no-fund >> "$LOG" 2>&1 || note "npm install failed" "see $LOG"; }
+grep -qE '^package(-lock)?\.json$' <<< "$changed" && { npm ci --no-audit --no-fund >> "$LOG" 2>&1 || note "npm install failed" "see $LOG"; }
 if grep -qE '^(runner/|package(-lock)?\.json$)' <<< "$changed"; then
   launchctl kickstart -k "gui/$(id -u)/com.takethewheel.runner" && done_+=("runner restarted")
 fi
