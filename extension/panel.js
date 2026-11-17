@@ -9,10 +9,10 @@ const save = () => chrome.storage.local.set({ convos, current });
 const cur = () => convos[current];
 
 // Model / effort / search / budget are saved per conversation; a new one starts with the current values.
-const readSettings = () => ({ model: $('model').value, effort: $('effort').value, search: $('search').checked, lab: $('lab').checked, localVision: $('localVision').checked, planMode: $('planMode').checked, useVision: $('useVision').checked, budget: $('budget').value });
+const readSettings = () => ({ model: $('model').value, effort: $('effort').value, search: $('search').checked, lab: $('lab').checked, localVision: $('localVision').checked, planMode: $('planMode').checked, useVision: $('useVision').checked, writingOnly: $('writingOnly').checked, budget: $('budget').value });
 function applySettings(st) {
   if (!st) return;
-  $('model').value = st.model; $('effort').value = st.effort; $('search').checked = !!st.search; $('lab').checked = !!st.lab; $('localVision').checked = !!st.localVision; $('planMode').checked = !!st.planMode;
+  $('model').value = st.model; $('effort').value = st.effort; $('search').checked = !!st.search; $('lab').checked = !!st.lab; $('localVision').checked = !!st.localVision; $('planMode').checked = !!st.planMode; $('writingOnly').checked = !!st.writingOnly;
   applyProvider();
   $('useVision').checked = st.useVision !== false; // defaults ON, unlike the others -- undefined (older saved settings) must stay ON, not OFF
   $('budget').value = st.budget;
@@ -20,7 +20,7 @@ function applySettings(st) {
 function saveSettings() {
   if (!cur()) return;
   cur().settings = readSettings();
-  chrome.storage.local.set({ model: $('model').value, budget: $('budget').value, search: $('search').checked, lab: $('lab').checked, localVision: $('localVision').checked, planMode: $('planMode').checked, useVision: $('useVision').checked }); // defaults for new conversations
+  chrome.storage.local.set({ model: $('model').value, budget: $('budget').value, search: $('search').checked, lab: $('lab').checked, localVision: $('localVision').checked, planMode: $('planMode').checked, useVision: $('useVision').checked, writingOnly: $('writingOnly').checked }); // defaults for new conversations
   save();
 }
 
@@ -117,8 +117,9 @@ const show = {
     c.cost = total;
     // On the local model this is still claude's API-equivalent estimate: what the run would have cost on Claude.
     const price = `$${run.toFixed(3)} est.` + (prev ? ` (conversation $${total.toFixed(3)})` : '');
+    const words = e.words != null ? `, ${e.words}${e.limit ? `/${e.limit}` : ''} words` : ''; // writing mode's code check
     if (stopping) log(c, `■ stopped by request — ${price}, ${e.turns} turns`, 'step');
-    else log(c, `${e.error ? '✗' : '✓'} ${e.subtype === 'success' ? 'done' : e.subtype} — ${price}, ${e.turns} turns`, e.error ? 'err' : 'done');
+    else log(c, `${e.error ? '✗' : '✓'} ${e.subtype === 'success' ? 'done' : e.subtype} — ${price}, ${e.turns} turns${words}`, e.error ? 'err' : 'done');
     if (c.id === current) render(true);
   },
   end: () => {},
@@ -157,13 +158,14 @@ async function go() {
   const task = $('task').value.trim();
   if (!task || running) return;
   const c = cur();
-  const lab = $('lab').checked;
+  const writing = $('writingOnly').checked; // text only: no tab, no overlay, no lab
+  const lab = !writing && $('lab').checked;
   let tab, labInfo;
   if (lab) {
     try { labInfo = await prepareLab(); }
     catch (err) { log(c, '✗ ' + err.message, 'err'); return; }
     tab = { id: labInfo.vmTabId, url: labInfo.instructionsUrl };
-  } else {
+  } else if (!writing) {
     [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab) await chrome.tabs.update(tab.id, { active: true }); // opencli binds the active tab
   }
@@ -177,7 +179,7 @@ async function go() {
   try {
     const r = await fetch(`${RUNNER}${planMode ? '/lab/plan' : '/task'}`, {
       method: 'POST', headers: { ...auth(), 'content-type': 'application/json' },
-      body: JSON.stringify({ task, tabUrl: tab?.url, provider: $('provider').value, model: $('model').value, maxBudgetUsd: Number($('budget').value), sessionId: c.sessionId, effort: $('effort').value, search: $('search').checked, lab, localVision: $('localVision').checked, useVision: $('useVision').checked, ...visionBody() }),
+      body: JSON.stringify({ task, tabUrl: tab?.url, provider: $('provider').value, model: $('model').value, maxBudgetUsd: Number($('budget').value), sessionId: c.sessionId, effort: $('effort').value, search: $('search').checked, lab, writing, localVision: $('localVision').checked, useVision: $('useVision').checked, ...visionBody() }),
     });
     if (!r.ok) throw new Error((await r.json()).error);
     const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
@@ -211,7 +213,7 @@ async function stop() {
 
 let effortByModel = {};
 const showEffort = () => { $('effort').value = effortByModel[$('model').value] || 'low'; };
-chrome.storage.local.get(['token', 'model', 'budget', 'convos', 'current', 'search', 'lab', 'localVision', 'planMode', 'useVision', 'effortByModel'], s => {
+chrome.storage.local.get(['token', 'model', 'budget', 'convos', 'current', 'search', 'lab', 'localVision', 'planMode', 'useVision', 'writingOnly', 'effortByModel'], s => {
   if (s.token) $('token').value = s.token;
   if (s.model) $('model').value = s.model;
   if (s.budget) $('budget').value = s.budget;
@@ -220,6 +222,7 @@ chrome.storage.local.get(['token', 'model', 'budget', 'convos', 'current', 'sear
   $('lab').checked = !!s.lab;
   $('localVision').checked = !!s.localVision;
   $('planMode').checked = !!s.planMode;
+  $('writingOnly').checked = !!s.writingOnly;
   $('useVision').checked = s.useVision !== false; // defaults ON (see applySettings)
   effortByModel = s.effortByModel || {};
   showEffort();
@@ -288,6 +291,7 @@ $('model').onchange = () => { showEffort(); applyProvider(); saveSettings(); };
 $('effort').onchange = () => { effortByModel[$('model').value] = $('effort').value; chrome.storage.local.set({ effortByModel }); saveSettings(); };
 $('useVision').onchange = saveSettings;
 $('search').onchange = saveSettings;
+$('writingOnly').onchange = saveSettings;
 $('lab').onchange = saveSettings;
 $('planMode').onchange = saveSettings;
 $('localVision').onchange = () => {

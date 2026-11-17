@@ -8,6 +8,7 @@ import { join, delimiter } from 'node:path';
 import { guardArgs, deniedHost } from './guard.mjs';
 import { tap, stats, emit } from './telemetry.mjs';
 import { APPROVED, region, check as bedrockCheck } from './bedrock.mjs';
+import { wordLimit, countWords, stripMeta } from './writing.mjs';
 
 const HERE = import.meta.dirname, PORT = 19826, SESSION = 'task';
 // Optional per-machine settings, one KEY=VALUE per line (e.g. LABCTL_VISION_URL for oMLX on another machine).
@@ -22,6 +23,7 @@ if (!existsSync(TOKEN_FILE)) writeFileSync(TOKEN_FILE, randomBytes(16).toString(
 const TOKEN = readFileSync(TOKEN_FILE, 'utf8').trim();
 const PROMPT = readFileSync(join(HERE, 'agent-prompt.md'), 'utf8');
 const PROMPT_LAB = readFileSync(join(HERE, 'lab-agent-prompt.md'), 'utf8');
+const PROMPT_WRITING = readFileSync(join(HERE, 'writing-prompt.md'), 'utf8');
 const PROMPT_PLAN = readFileSync(join(HERE, 'lab-plan-prompt.md'), 'utf8');
 const LAB_SESSIONS = ['instructions', 'vm'];
 const DENY = JSON.parse(readFileSync(join(HERE, 'denylist.json'), 'utf8'));
@@ -250,6 +252,35 @@ function spawnClaudeCollect({ wrapped, provider, model, effort, systemPrompt, to
   });
 }
 
+// Writing only: no browser, no tools, a short writing prompt; then code checks the answer. A leading line about the
+// model/request is stripped, and if a word limit parsed from the task is exceeded, one revision turn cuts it down.
+async function runWriting(res, { task, provider = 'claude', model = 'haiku', effort = 'low', maxBudgetUsd = 0.5, sessionId, visionUrl, visionModel }) {
+  const vision = visionCfg({ visionUrl, visionModel });
+  if (!['low', 'medium', 'high'].includes(effort)) effort = 'low';
+  const m = modelFor(provider, model, vision), budget = Number(maxBudgetUsd) || 0.5;
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+  const send = tap({ mode: 'writing', provider, model: m.model, effort, resume: !!sessionId }, ev => res.write(`data: ${JSON.stringify(ev)}\n\n`));
+  res.on('close', () => child?.kill('SIGINT'));
+  const st = { labels: {}, q: '' };
+  const quiet = ev => ev.kind !== 'text' && ev.kind !== 'done' && send(ev); // only the checked final text reaches the log
+  const limit = wordLimit(task);
+  send({ kind: 'start', text: `${m.local ? m.model : model} · ${effort} effort · writing only${limit ? ` · ${limit}-word limit` : ''} · $${budget} cap` });
+  send({ kind: 'step', text: '✍ Writing…' });
+  const common = { provider, model, effort, systemPrompt: PROMPT_WRITING, tools: '', allowedTools: [], env: visionEnvFor(vision), send: quiet, st };
+  const r = await spawnClaudeCollect({ ...common, wrapped: task, sessionId, maxBudgetUsd: budget });
+  let text = stripMeta(r.finalText), words = countWords(text), cost = r.cost, turns = r.turns;
+  if (limit && words > limit && !r.isError && r.code === 0) {
+    send({ kind: 'step', text: `✂ ${words} words, over the ${limit}-word limit: one revision` });
+    const r2 = await spawnClaudeCollect({ ...common, sessionId: r.sessionId, maxBudgetUsd: Math.max(0.05, budget - cost),
+      wrapped: `That is ${words} words; the limit is ${limit}. Rewrite it in about ${Math.floor(limit * 0.9)} words. Keep every required part of the assignment; cut wording, not content. Reply with only the revised deliverable.` });
+    const t2 = stripMeta(r2.finalText);
+    if (t2) { text = t2; words = countWords(t2); }
+    cost = r2.cost >= cost ? r2.cost : cost + r2.cost; turns += r2.turns; // claude's cost is cumulative over a resumed session
+  }
+  send({ kind: 'done', text, cost, turns, error: !text, subtype: text ? 'success' : r.code ? 'stopped' : 'error', words, limit });
+  res.end();
+}
+
 // Pulls the plan's JSON out of the planner's final answer -- a ```json fence if it used one,
 // otherwise the whole trimmed text.
 function extractPlan(text) {
@@ -351,6 +382,7 @@ http.createServer(async (req, res) => {
     if (body.sessionId && !/^[0-9a-f-]{36}$/.test(body.sessionId)) return json(res, 400, { error: 'bad sessionId' });
     if (denied(body.tabUrl)) return json(res, 403, { error: `denylisted site: ${new URL(body.tabUrl).hostname}` });
     if (child) return json(res, 409, { error: 'a task is already running' });
+    if (body.writing) return runWriting(res, body);
     return startTask(res, body);
   }
   if (req.method === 'POST' && path === '/lab/plan') {

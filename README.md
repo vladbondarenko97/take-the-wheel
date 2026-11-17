@@ -127,6 +127,7 @@ Open the tab you want driven, click the Take the Wheel icon, type the task, and 
 
 - **Conversations.** ＋ starts one, the dropdown switches, 🗑 deletes. Typing in an existing conversation resumes the same Claude session (the button says **Continue**), so it remembers everything instead of re-exploring. Start a new one for unrelated tasks, because every follow-up re-reads the whole history.
 - **Handoffs.** Say "pause", "wait" or "stop at…" and it stops there. It also stops on logins, CAPTCHAs and questions only you can answer, ending with an amber **Waiting for you** card. Do your part, then reply ("done, continue").
+- **Writing only.** Tick it for a text deliverable (a report, an essay, an answer). The browser isn't touched: no tab, no overlay, no tools, and a short writing prompt ([`runner/writing-prompt.md`](runner/writing-prompt.md)) instead of the browser one. Code then checks the answer ([`runner/writing.mjs`](runner/writing.mjs)): a leading line about the request is stripped, and if the task gives a word limit and the answer is over it, one revision turn cuts it down. The result card shows the final word count.
 - **Models.** Haiku by default. Use Sonnet or Opus when the task needs judgment. **Gemma 12B (local)** runs the agent on your oMLX vision model (the same server and model as local vision), for free and much slower. Web search is off for it, and the guard only lets it act through `ttw do`/`ttw fill`, which refuse Submit buttons. The `$` figures are Claude Code's API-price estimates and count against your plan.
 
 <details>

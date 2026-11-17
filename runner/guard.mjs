@@ -109,7 +109,8 @@ export function guardArgs(allowedTools, { shots, denySites, ttwActs = false }) {
     denySites,
     ttwActs,
   };
-  return { args: ['--allowedTools', ...allowedTools, '--settings', JSON.stringify(settings)], env: { TTW_GUARD: JSON.stringify(cfg) } };
+  // No allowlist (writing mode: no tools at all) -> no --allowedTools flag; the hook still denies everything.
+  return { args: [...(allowedTools.length ? ['--allowedTools', ...allowedTools] : []), '--settings', JSON.stringify(settings)], env: { TTW_GUARD: JSON.stringify(cfg) } };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === import.meta.filename) {
